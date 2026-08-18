@@ -35,7 +35,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: 22.19.0
+          node-version: 22
           cache: pnpm
 
       - name: Install dependencies
@@ -99,7 +99,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: 22.19.0
+          node-version: 22
 
       - name: Setup .NET 8
         if: matrix.platform == 'windows'
