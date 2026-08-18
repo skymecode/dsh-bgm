@@ -568,6 +568,7 @@ export class BeatSurface {
   private maxCombo = 0
   private resultCard: HTMLDivElement | undefined
   private resultAnimation: Animation | undefined
+  private resultAnchor: DOMRect | undefined
   private noteIndex = 0
   private judgementIndex = 0
   private lastJudgementStrikeAt = 0
@@ -609,13 +610,10 @@ export class BeatSurface {
       if (finalStateMayChange) {
         const finalStreaming = isFinalAnswerStreaming()
         if (finalStreaming) {
-          if (!this.finalOutputStreaming) {
-            this.finalOutputStreaming = true
-            this.suspendVisualsForFinal()
-          }
+          this.beginFinalOutput()
           return
         }
-        this.finalOutputStreaming = false
+        this.finishFinalOutput()
       }
       for (const record of records) {
         if (this.overlay.contains(record.target)) continue
@@ -637,6 +635,20 @@ export class BeatSurface {
     })
   }
 
+  private beginFinalOutput(): void {
+    if (this.finalOutputStreaming) return
+    this.resultAnchor = this.judgementSurface()?.target.getBoundingClientRect()
+    this.finalOutputStreaming = true
+    this.suspendVisualsForFinal()
+  }
+
+  private finishFinalOutput(): void {
+    if (!this.finalOutputStreaming) return
+    this.finalOutputStreaming = false
+    if (this.judgedCount > 0) this.showResultCard(this.resultAnchor)
+    this.resultAnchor = undefined
+  }
+
   private suspendVisualsForFinal(): void {
     if (this.refreshFrame !== undefined) cancelAnimationFrame(this.refreshFrame)
     if (this.refreshTimer !== undefined) window.clearTimeout(this.refreshTimer)
@@ -650,7 +662,7 @@ export class BeatSurface {
     this.currentActivityTarget = undefined
     this.currentDownbeatCue = undefined
     this.currentFlowCue = undefined
-    this.dismissResultCard(true)
+    this.dismissResultCard(false)
     this.noteIndex = 0
     this.judgementIndex = 0
     this.lastJudgementStrikeAt = 0
@@ -853,14 +865,14 @@ export class BeatSurface {
   private refresh(): void {
     if (!this.active || this.finalOutputStreaming) return
     if (isFinalAnswerStreaming()) {
-      this.finalOutputStreaming = true
-      this.suspendVisualsForFinal()
+      this.beginFinalOutput()
       return
     }
     const now = performance.now()
     this.lastRefreshAt = now
     const liveWanted = targetCandidates()
     const liveActivity = liveWanted.find(candidate => candidate.kind !== 'deep-diving')
+    if (liveActivity !== undefined && this.resultCard !== undefined) this.dismissResultCard(true)
     if (liveActivity !== undefined) {
       this.retainedActivity = liveActivity
       this.retainActivityUntil = now + QUICK_ACTIVITY_HOLD_MS
@@ -1265,6 +1277,7 @@ export class BeatSurface {
     this.missCount = 0
     this.maxCombo = 0
     this.judgementIndex = 0
+    this.resultAnchor = undefined
   }
 
   private dismissResultCard(resetState = false): void {
@@ -2005,8 +2018,6 @@ export class BeatSurface {
 
   private deactivate(): void {
     if (!this.active && this.surfaces.size === 0) return
-    const resultAnchor = this.judgementSurface()?.target.getBoundingClientRect()
-    const shouldShowResult = this.judgedCount > 0 && !this.finalOutputStreaming
     this.active = false
     delete document.documentElement.dataset.dshBgmActive
     this.beatDetector.reset()
@@ -2044,8 +2055,7 @@ export class BeatSurface {
     for (const ray of this.overlay.querySelectorAll('.dsh-bgm-center-ray')) ray.remove()
     for (const surface of this.surfaces.values()) this.removeSurface(surface)
     this.surfaces.clear()
-    if (shouldShowResult) this.showResultCard(resultAnchor)
-    else this.resetScoreState()
+    this.resetScoreState()
   }
 
   private dispose(): void {

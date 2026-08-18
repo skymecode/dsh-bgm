@@ -46,11 +46,11 @@ freeze. Combo 5/10/25 unlocks stronger local impacts, gold outlines and gold
 trails. Milestone words appear at 5/10/25/50. Only an expected pulse that
 expires without a nearby detection
 resets Combo.
-When system audio stays silent for 700ms, a session with at least one judgement
+When the final answer finishes streaming, a session with at least one judgement
 ends on a local 3.2-second result card. It shows the final seven-digit score,
 S/A/B/C/D rank, accuracy, PERFECT/GREAT/GOOD/MISS counts and maximum Combo.
-The snapshot clears only after the card finishes; resumed audio dismisses and
-resets the old result before starting a new session.
+The snapshot clears only after the card finishes; a new activity dismisses and
+resets the old result. Audio silence only performs a quiet cleanup.
 Very short Bash/Read calls trigger an immediate entry wave and retain only their
 latest row for 1.6 seconds, so their rhythm-game feedback survives completion.
 Running/streaming activity stays React-painted: it is never masked or mirrored
