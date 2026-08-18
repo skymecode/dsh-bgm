@@ -20,6 +20,11 @@ note-trail opacity and tracer brightness even between detected hits.
 Below a 500ms measured period, moving sine/burst surfaces become more likely;
 below 350ms a cue runs two phase cycles. Strong burst hits also emit two short
 local rays from the row centre toward its edges, never a page flash.
+On wide layouts, two symmetric 12-bar RGB spectrum banks occupy only the empty
+gutters outside the official composer column. Bass/mid/treble/onset continuously
+drive their GPU-composited height and opacity without rebuilding DOM. They are
+enabled by default, persist their setting locally, and can be switched through
+the official `+` command menu under `/bgm-atmosphere`; narrow layouts hide them.
 
 The judgement lane stays hidden until two reliable flow intervals establish a
 measured period; there is no hard-coded bootstrap tempo. A glyph then launches
@@ -47,10 +52,12 @@ trails. Milestone words appear at 5/10/25/50. Only an expected pulse that
 expires without a nearby detection
 resets Combo.
 When the final answer finishes streaming, a session with at least one judgement
-ends on a local 3.2-second result card. It shows the final seven-digit score,
-S/A/B/C/D rank, accuracy, PERFECT/GREAT/GOOD/MISS counts and maximum Combo.
-The snapshot clears only after the card finishes; a new activity dismisses and
-resets the old result. Audio silence only performs a quiet cleanup.
+ends on a transparent 3.2-second result performance rather than a static card:
+the seven-digit score rolls rapidly and settles, the S/A/B/C/D rank bursts
+through local rings and particles, 6–10 colored notes fall from the viewport
+top, and PERFECT/GREAT/GOOD/MISS/maximum Combo reveal in sequence. The snapshot
+clears only after the show finishes; a new activity dismisses and resets the old
+result. Audio silence only performs a quiet cleanup.
 Very short Bash/Read calls trigger an immediate entry wave and retain only their
 latest row for 1.6 seconds, so their rhythm-game feedback survives completion.
 Running/streaming activity stays React-painted: it is never masked or mirrored
@@ -58,8 +65,9 @@ per glyph, so token updates cannot restart text animation. Its real DOM row
 rises by at most 3px and stretches by at most 1.5% with the volume envelope,
 while a local underline, music-note projectile and judgement line carry the
 rhythm. Once the row becomes stable, its continuous BPM wave surface is enabled.
-Final answers never animate: once the official final-text stream begins, the
-visual layer tears down and ignores subsequent token mutations. Hits use only
+Final-answer text never animates: once the official final-text stream begins,
+the text and judgement layers tear down and ignore subsequent token mutations;
+the optional side-gutter atmosphere can keep following music. Hits use only
 activity-text, judgement-line, ring and small local keycap feedback; the page
 and conversation background never pulse or flash.
 Each hit is a discrete wave rather than continuous line jitter. Screen-reader

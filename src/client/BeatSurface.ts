@@ -1,4 +1,5 @@
 import type { BgmSnapshot, RhythmFrame } from '../core/types.ts'
+import { AtmosphereVisualizer } from './Atmosphere.ts'
 import { subscribeBgm } from './stream.ts'
 
 type SurfaceKind = 'reasoning' | 'tool' | 'context' | 'deep-diving'
@@ -527,6 +528,7 @@ function isStreamingActivity(target: HTMLElement, kind: SurfaceKind): boolean {
  */
 export class BeatSurface {
   private readonly overlay = document.createElement('div')
+  private readonly atmosphere = new AtmosphereVisualizer(this.overlay)
   private readonly judgementLine = document.createElement('div')
   private readonly comboLabel = document.createElement('div')
   private readonly scoreLabel = document.createElement('div')
@@ -667,7 +669,7 @@ export class BeatSurface {
     this.judgementIndex = 0
     this.lastJudgementStrikeAt = 0
     this.clearHitstop()
-    this.clearEnergyLayer()
+    this.clearEnergyLayer(false)
     for (const animation of this.judgementLine.getAnimations()) animation.cancel()
     this.judgementLine.hidden = true
     this.comboLabel.hidden = true
@@ -717,6 +719,17 @@ export class BeatSurface {
     return () => { this.dispose() }
   }
 
+  atmosphereEnabled(): boolean {
+    return this.atmosphere.enabled()
+  }
+
+  setAtmosphereEnabled(enabled: boolean): void {
+    this.atmosphere.setEnabled(enabled)
+    if (enabled && this.active && this.lastFrame !== undefined && this.energyRenderFrame === undefined) {
+      this.energyRenderFrame = requestAnimationFrame(this.renderEnergyLayer)
+    }
+  }
+
   /** Track loudness continuously; attack is fast while release stays musical. */
   private trackEnergy(frame: RhythmFrame): void {
     this.energyTarget = clamp(
@@ -726,7 +739,7 @@ export class BeatSurface {
     )
     const smoothing = this.energyTarget > this.energyEnvelope ? 0.52 : 0.12
     this.energyEnvelope += (this.energyTarget - this.energyEnvelope) * smoothing
-    if (!this.finalOutputStreaming && this.energyRenderFrame === undefined) {
+    if (this.energyRenderFrame === undefined) {
       this.energyRenderFrame = requestAnimationFrame(this.renderEnergyLayer)
     }
   }
@@ -734,8 +747,10 @@ export class BeatSurface {
   /** One coalesced compositor write per audio frame; CSS interpolates between writes. */
   private readonly renderEnergyLayer = (): void => {
     this.energyRenderFrame = undefined
-    if (!this.active || this.finalOutputStreaming) return
+    if (!this.active) return
     const energy = clamp(this.energyEnvelope, 0, 1)
+    if (this.lastFrame !== undefined) this.atmosphere.render(this.lastFrame, energy)
+    if (this.finalOutputStreaming) return
     this.overlay.style.setProperty('--dsh-bgm-energy-scale', (1 + energy * 0.03).toFixed(4))
     this.overlay.style.setProperty(
       '--dsh-bgm-note-trail-opacity',
@@ -785,7 +800,7 @@ export class BeatSurface {
     target.style.removeProperty('--dsh-bgm-breath-scale')
   }
 
-  private clearEnergyLayer(): void {
+  private clearEnergyLayer(clearAtmosphere = true): void {
     if (this.energyRenderFrame !== undefined) cancelAnimationFrame(this.energyRenderFrame)
     this.energyRenderFrame = undefined
     this.energyTarget = 0
@@ -794,6 +809,7 @@ export class BeatSurface {
     this.overlay.style.removeProperty('--dsh-bgm-note-trail-opacity')
     this.overlay.style.removeProperty('--dsh-bgm-energy-brightness')
     for (const target of [...this.breathLayers.keys()]) this.removeBreathLayer(target)
+    if (clearAtmosphere) this.atmosphere.clear()
   }
 
   private readonly scheduleRefresh = (): void => {
@@ -1283,12 +1299,13 @@ export class BeatSurface {
   private dismissResultCard(resetState = false): void {
     this.resultAnimation?.cancel()
     this.resultAnimation = undefined
+    for (const animation of this.resultCard?.getAnimations({ subtree: true }) ?? []) animation.cancel()
     this.resultCard?.remove()
     this.resultCard = undefined
     if (resetState) this.resetScoreState()
   }
 
-  /** Render a local, non-interactive rhythm-game result card for the finished session. */
+  /** Run a four-act, non-interactive rhythm-game result performance. */
   private showResultCard(anchor: DOMRect | undefined): void {
     if (this.judgedCount === 0) return
     this.dismissResultCard(false)
@@ -1297,9 +1314,11 @@ export class BeatSurface {
       : accuracy >= 0.8 ? 'B' : accuracy >= 0.7 ? 'C' : 'D'
     const rankColor = rank === 'S' ? '#ffd76a' : rank === 'A' ? '#dce8f5'
       : rank === 'B' ? '#8fd7ff' : rank === 'C' ? '#9cf2c5' : '#ff7a90'
-    const card = document.createElement('div')
-    card.className = 'dsh-bgm-result-card'
-    card.style.setProperty('--dsh-bgm-result-color', rankColor)
+    const stage = document.createElement('div')
+    stage.className = 'dsh-bgm-result-stage'
+    stage.style.setProperty('--dsh-bgm-result-color', rankColor)
+    const show = document.createElement('div')
+    show.className = 'dsh-bgm-result-show'
 
     const rankLabel = document.createElement('div')
     rankLabel.className = 'dsh-bgm-result-rank'
@@ -1311,7 +1330,7 @@ export class BeatSurface {
     heading.textContent = 'RESULT'
     const score = document.createElement('div')
     score.className = 'dsh-bgm-result-score'
-    score.textContent = `SCORE ${String(this.score).padStart(7, '0')}`
+    score.textContent = 'SCORE 0000000'
     const accuracyLabel = document.createElement('div')
     accuracyLabel.className = 'dsh-bgm-result-accuracy'
     accuracyLabel.textContent = `ACC ${(accuracy * 100).toFixed(2)}%`
@@ -1326,30 +1345,56 @@ export class BeatSurface {
       ['MISS', this.missCount],
       ['MAX COMBO', this.maxCombo],
     ]
-    for (const [label, value] of values) {
+    const statCounts: HTMLElement[] = []
+    const statItems: HTMLElement[] = []
+    for (const [label] of values) {
       const item = document.createElement('span')
       item.className = 'dsh-bgm-result-stat'
       const name = document.createElement('small')
       name.textContent = label
       const count = document.createElement('strong')
-      count.textContent = String(value)
+      count.textContent = '0'
       item.append(name, count)
       stats.append(item)
+      statItems.push(item)
+      statCounts.push(count)
     }
-    card.append(rankLabel, summary, stats)
-    this.overlay.append(card)
+    show.append(rankLabel, summary, stats)
+    stage.append(show)
+    this.overlay.append(stage)
 
-    const width = Math.min(360, Math.max(260, Math.min(anchor?.width ?? 320, window.innerWidth - 24)))
+    const width = Math.min(430, Math.max(300, Math.min(anchor?.width ?? 390, window.innerWidth - 24)))
     const preferredLeft = anchor?.left ?? (window.innerWidth - width) / 2
     const left = clamp(preferredLeft, 12, Math.max(12, window.innerWidth - width - 12))
-    const preferredTop = anchor === undefined ? window.innerHeight / 2 - 92 : anchor.bottom + 14
-    const top = clamp(preferredTop, 12, Math.max(12, window.innerHeight - 196))
-    card.style.width = `${width}px`
-    card.style.left = `${left}px`
-    card.style.top = `${top}px`
+    const preferredTop = anchor === undefined ? window.innerHeight / 2 - 104 : anchor.bottom + 12
+    const top = clamp(preferredTop, 18, Math.max(18, window.innerHeight - 224))
+    show.style.width = `${width}px`
+    show.style.left = `${left}px`
+    show.style.top = `${top}px`
 
-    this.resultCard = card
+    this.resultCard = stage
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    if (reducedMotion) {
+      score.textContent = `SCORE ${String(this.score).padStart(7, '0')}`
+      statCounts.forEach((count, index) => { count.textContent = String(values[index]?.[1] ?? 0) })
+    } else {
+      rankLabel.animate([
+        { opacity: 0, transform: 'scale(.18) rotate(-8deg)', textShadow: '0 0 0 transparent' },
+        { opacity: 1, transform: 'scale(1.38) rotate(2deg)', textShadow: `0 0 16px ${rankColor}, 0 0 42px ${rankColor}`, offset: 0.45 },
+        { opacity: 1, transform: 'scale(.92) rotate(-1deg)', offset: 0.7 },
+        { opacity: 1, transform: 'scale(1) rotate(0)' },
+      ], { duration: 720, delay: 260, easing: 'cubic-bezier(.12,.82,.2,1)', fill: 'both' })
+      statItems.forEach((item, index) => {
+        item.animate([
+          { opacity: 0, transform: 'translateY(8px) scale(.8)' },
+          { opacity: 1, transform: 'translateY(-1px) scale(1.08)', offset: 0.65 },
+          { opacity: 1, transform: 'translateY(0) scale(1)' },
+        ], { duration: 420, delay: 1_080 + index * 110, easing: 'cubic-bezier(.16,.78,.24,1)', fill: 'both' })
+      })
+      this.animateResultNumbers(stage, score, statCounts, values.map(([, value]) => value), this.score)
+      this.spawnResultBurst(stage, left + 50, top + 58, rankColor, rank)
+      this.spawnResultNotes(stage, left, width, top + 190, rankColor, rank)
+    }
     const frames: Keyframe[] = reducedMotion
       ? [
           { opacity: 1 },
@@ -1357,19 +1402,134 @@ export class BeatSurface {
           { opacity: 0 },
         ]
       : [
-          { opacity: 0, transform: 'translateY(10px) scale(.96)' },
-          { opacity: 1, transform: 'translateY(0) scale(1)', offset: 0.12 },
-          { opacity: 1, transform: 'translateY(0) scale(1)', offset: 0.82 },
-          { opacity: 0, transform: 'translateY(-7px) scale(.985)' },
+          { opacity: 0 },
+          { opacity: 1, offset: 0.05 },
+          { opacity: 1, offset: 0.86 },
+          { opacity: 0 },
         ]
-    const animation = card.animate(frames, { duration: 3_200, easing: 'cubic-bezier(.18,.78,.24,1)' })
+    const animation = stage.animate(frames, { duration: 3_200, easing: 'cubic-bezier(.18,.78,.24,1)' })
     this.resultAnimation = animation
     animation.onfinish = () => {
-      if (this.resultCard !== card) return
-      card.remove()
+      if (this.resultCard !== stage) return
+      stage.remove()
       this.resultCard = undefined
       this.resultAnimation = undefined
       this.resetScoreState()
+    }
+  }
+
+  /** One rAF loop drives the slot-machine score and all five short count rolls. */
+  private animateResultNumbers(
+    stage: HTMLElement,
+    scoreLabel: HTMLElement,
+    countLabels: readonly HTMLElement[],
+    values: readonly number[],
+    finalScore: number,
+  ): void {
+    const startedAt = performance.now()
+    const rollMs = 1_180
+    let lastPaintAt = Number.NEGATIVE_INFINITY
+    const tick = (now: number): void => {
+      if (this.resultCard !== stage) return
+      const elapsed = now - startedAt
+      if (now - lastPaintAt < 32 && elapsed < 1_950) {
+        requestAnimationFrame(tick)
+        return
+      }
+      lastPaintAt = now
+      const progress = clamp(elapsed / rollMs, 0, 1)
+      const eased = 1 - (1 - progress) ** 4
+      const jitterWindow = progress < 0.72 ? 1 - progress / 0.72 : 0
+      const tickIndex = Math.floor(elapsed / 34)
+      const jitter = (hashUnit(finalScore + tickIndex * 97, 311) - 0.5)
+        * Math.max(7_000, finalScore * 0.28) * jitterWindow
+      const rollingScore = progress < 0.03
+        ? 0
+        : progress >= 1 ? finalScore : Math.round(clamp(finalScore * eased + jitter, 0, 9_999_999))
+      scoreLabel.textContent = `SCORE ${String(rollingScore).padStart(7, '0')}`
+      countLabels.forEach((label, index) => {
+        const local = clamp((elapsed - 1_080 - index * 110) / 430, 0, 1)
+        const target = values[index] ?? 0
+        label.textContent = String(Math.round(target * (1 - (1 - local) ** 3)))
+      })
+      if (elapsed < 1_950) requestAnimationFrame(tick)
+    }
+    requestAnimationFrame(tick)
+  }
+
+  private spawnResultBurst(
+    stage: HTMLElement,
+    x: number,
+    y: number,
+    color: string,
+    rank: string,
+  ): void {
+    const power = rank === 'S' ? 1.25 : rank === 'A' ? 1.08 : rank === 'D' ? 0.78 : 0.94
+    for (let index = 0; index < 2; index += 1) {
+      const ring = document.createElement('span')
+      ring.className = 'dsh-bgm-result-ring'
+      ring.style.left = `${x}px`
+      ring.style.top = `${y}px`
+      ring.style.color = color
+      stage.append(ring)
+      ring.animate([
+        { opacity: 0, transform: 'translate(-50%, -50%) scale(.2)' },
+        { opacity: 0.9 - index * 0.22, transform: 'translate(-50%, -50%) scale(.48)', offset: 0.12 },
+        { opacity: 0, transform: `translate(-50%, -50%) scale(${(2.8 * power - index * 0.42).toFixed(2)})` },
+      ], { duration: 620 + index * 110, delay: 310 + index * 70, easing: 'cubic-bezier(.12,.72,.2,1)', fill: 'both' })
+    }
+    const particles = rank === 'S' ? 14 : rank === 'A' ? 11 : rank === 'D' ? 7 : 9
+    for (let index = 0; index < particles; index += 1) {
+      const particle = document.createElement('span')
+      particle.className = 'dsh-bgm-result-particle'
+      particle.style.left = `${x}px`
+      particle.style.top = `${y}px`
+      particle.style.color = color
+      stage.append(particle)
+      const angle = index / particles * Math.PI * 2 + hashUnit(this.judgementIndex + index, 401) * 0.35
+      const distance = (34 + hashUnit(this.judgementIndex + index, 409) * 46) * power
+      particle.animate([
+        { opacity: 0, transform: 'translate(-50%, -50%) scale(.4)' },
+        { opacity: 1, transform: 'translate(-50%, -50%) scale(1)', offset: 0.12 },
+        {
+          opacity: 0,
+          transform: `translate(calc(-50% + ${(Math.cos(angle) * distance).toFixed(1)}px), calc(-50% + ${(Math.sin(angle) * distance).toFixed(1)}px)) scale(.2)`,
+        },
+      ], { duration: 580, delay: 330, easing: 'cubic-bezier(.14,.78,.2,1)', fill: 'both' })
+    }
+  }
+
+  private spawnResultNotes(
+    stage: HTMLElement,
+    left: number,
+    width: number,
+    landingY: number,
+    color: string,
+    rank: string,
+  ): void {
+    const count = rank === 'S' ? 10 : rank === 'D' ? 6 : 8
+    for (let index = 0; index < count; index += 1) {
+      const note = document.createElement('span')
+      note.className = 'dsh-bgm-result-note'
+      note.textContent = index % 3 === 0 ? '♫' : '♪'
+      note.style.left = `${clamp(left - 48 + hashUnit(index + this.judgementIndex, 431) * (width + 96), 12, window.innerWidth - 28)}px`
+      note.style.top = '-34px'
+      note.style.color = color
+      note.style.fontSize = `${14 + Math.round(hashUnit(index, 439) * 12)}px`
+      stage.append(note)
+      const drift = (hashUnit(index, 443) - 0.5) * 72
+      const rotate = (hashUnit(index, 449) - 0.5) * 220
+      note.animate([
+        { opacity: 0, transform: 'translate3d(0, -20px, 0) rotate(0deg) scale(.8)' },
+        { opacity: 0.88, offset: 0.15 },
+        { opacity: 0.72, offset: 0.76 },
+        { opacity: 0, transform: `translate3d(${drift.toFixed(1)}px, ${(landingY + 80).toFixed(1)}px, 0) rotate(${rotate.toFixed(1)}deg) scale(1.08)` },
+      ], {
+        duration: 1_450 + hashUnit(index, 457) * 850,
+        delay: 520 + hashUnit(index, 461) * 420,
+        easing: 'cubic-bezier(.22,.48,.36,1)',
+        fill: 'both',
+      })
     }
   }
 
@@ -2073,6 +2233,7 @@ export class BeatSurface {
     this.silenceTimer = undefined
     this.deactivate()
     this.dismissResultCard(true)
+    this.atmosphere.dispose()
     this.overlay.remove()
   }
 }
