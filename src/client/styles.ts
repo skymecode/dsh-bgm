@@ -18,12 +18,42 @@ const stylesheet = `
   pointer-events: none;
   white-space: pre;
   transform-origin: 50% 50%;
-  will-change: transform, opacity;
+  isolation: isolate;
+  overflow: visible;
+  will-change: transform, opacity, filter;
   -webkit-text-fill-color: currentColor;
   text-shadow:
-    4px 0 3px color-mix(in srgb, currentColor 48%, transparent),
-    9px 0 6px color-mix(in srgb, currentColor 24%, transparent),
-    0 0 10px color-mix(in srgb, currentColor 58%, transparent);
+    3px 0 2px color-mix(in srgb, currentColor 72%, transparent),
+    8px 0 5px color-mix(in srgb, currentColor 48%, transparent),
+    16px 0 9px color-mix(in srgb, currentColor 22%, transparent),
+    0 0 12px color-mix(in srgb, currentColor 78%, transparent);
+}
+
+/* Notes travel right-to-left, so the same-color comet trail stays behind them. */
+.dsh-bgm-note::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  left: 48%;
+  top: 50%;
+  width: 72px;
+  height: 4px;
+  pointer-events: none;
+  border-radius: 999px;
+  opacity: .82;
+  background: linear-gradient(
+    90deg,
+    currentColor 0,
+    color-mix(in srgb, currentColor 58%, transparent) 28%,
+    transparent 100%
+  );
+  filter: blur(.65px);
+  transform: translateY(-50%);
+  transform-origin: 0 50%;
+}
+
+.dsh-bgm-note--impact::before {
+  opacity: 0;
 }
 
 .dsh-bgm-judgement-line {
@@ -78,8 +108,28 @@ const stylesheet = `
   box-sizing: border-box;
   border: 1.5px solid currentColor;
   border-radius: 50%;
-  background: transparent;
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, currentColor 24%, transparent) 0,
+    color-mix(in srgb, currentColor 8%, transparent) 44%,
+    transparent 72%
+  );
   box-shadow: 0 0 8px currentColor, inset 0 0 5px currentColor;
+  will-change: transform, opacity;
+}
+
+.dsh-bgm-hit-ring--echo {
+  border-width: 1px;
+  box-shadow: 0 0 5px currentColor;
+}
+
+.dsh-bgm-hit-particle {
+  position: fixed;
+  z-index: 2147483004;
+  pointer-events: none;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 4px currentColor;
   will-change: transform, opacity;
 }
 
@@ -178,6 +228,7 @@ html[data-dsh-bgm-active] [data-dsh-bgm-reactive='deep-diving'][data-dsh-bgm-mas
   .dsh-bgm-glyph { transform: none !important; }
   .dsh-bgm-note,
   .dsh-bgm-hit-ring,
+  .dsh-bgm-hit-particle,
   .dsh-bgm-hit-key,
   .dsh-bgm-gold-streak,
   .dsh-bgm-flow-ripple,

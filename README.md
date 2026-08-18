@@ -19,6 +19,10 @@ The judgement lane stays hidden until two reliable flow intervals establish a
 measured period; there is no hard-coded bootstrap tempo. A glyph then launches
 from the latest activity row's trailing edge toward a fixed leading line at
 `lastHit + period`; travel is BPM-locked to `clamp(period * 0.75, 350ms, 900ms)`.
+The cloned glyph accelerates into the line with a same-color comet trail. Hits
+stay local to the judgement point: GOOD/GREAT/PERFECT emit 6/8/10 colored
+particles plus two colored ripple rings with a low-opacity radial core—never a
+white page flash.
 Detected mid/treble confidence grades the arrival as GOOD, GREAT or PERFECT;
 out-of-window detections silently re-anchor the grid, while melodic fallback
 pulses can settle a nearby note as a reduced-confidence GOOD. The note lane and

@@ -595,6 +595,7 @@ export class BeatSurface {
     this.accuracyLabel.textContent = 'ACC 100.00%'
     for (const grade of this.overlay.querySelectorAll('.dsh-bgm-grade-float')) grade.remove()
     for (const ring of this.overlay.querySelectorAll('.dsh-bgm-hit-ring')) ring.remove()
+    for (const particle of this.overlay.querySelectorAll('.dsh-bgm-hit-particle')) particle.remove()
     for (const key of this.overlay.querySelectorAll('.dsh-bgm-hit-key')) key.remove()
     for (const streak of this.overlay.querySelectorAll('.dsh-bgm-gold-streak')) streak.remove()
     for (const ripple of this.overlay.querySelectorAll('.dsh-bgm-flow-ripple')) ripple.remove()
@@ -885,15 +886,24 @@ export class BeatSurface {
     const landingLeft = judgeX - width / 2
     note.style.left = `${startX}px`
     note.style.top = `${landingTop}px`
+    note.style.color = this.combo >= 10 ? '#ffd76a' : '#8fd7ff'
     this.overlay.append(note)
     const remaining = Math.max(1, targetAt - now)
     note.animate([
-      { opacity: 0.2, transform: 'translate3d(0, 0, 0) scale(.82)' },
-      { opacity: 0.82, offset: 0.72 },
-      { opacity: 1, transform: `translate3d(${(landingLeft - startX).toFixed(2)}px, 0, 0) scale(1)` },
+      {
+        opacity: 0.16,
+        filter: 'brightness(.78) saturate(.88)',
+        transform: 'translate3d(0, 0, 0) scale(.72)',
+      },
+      { opacity: 0.72, offset: 0.68 },
+      {
+        opacity: 1,
+        filter: 'brightness(1.72) saturate(1.18)',
+        transform: `translate3d(${(landingLeft - startX).toFixed(2)}px, 0, 0) scale(1.1)`,
+      },
     ], {
       duration: Math.min(travelMs, remaining),
-      easing: 'linear',
+      easing: 'cubic-bezier(.64,.03,.9,.4)',
       fill: 'forwards',
     })
     this.predictedNote = {
@@ -912,19 +922,21 @@ export class BeatSurface {
     if (note === undefined) return
     this.predictedNote = undefined
     for (const animation of note.element.getAnimations()) animation.cancel()
+    note.element.classList.add('dsh-bgm-note--impact')
     note.element.style.left = `${note.landingLeft}px`
     note.element.style.top = `${note.landingTop}px`
+    const impactColor = confidence >= 0.74 ? '#ffd76a' : confidence >= 0.5 ? '#8fd7ff' : '#9cf2c5'
     const scale = 1.42 + confidence * 0.48
     const feedback = note.element.animate([
       { opacity: 1, transform: 'scale(1)', color: 'currentColor' },
-      { opacity: 1, transform: `scale(${scale.toFixed(2)})`, color: '#fff', offset: 0.34 },
-      { opacity: 0, transform: 'scale(.92)', color: '#fff' },
+      { opacity: 1, transform: `scale(${scale.toFixed(2)})`, color: impactColor, offset: 0.34 },
+      { opacity: 0, transform: 'scale(.92)', color: impactColor },
     ], { duration: 360 + confidence * 160, easing: 'cubic-bezier(.16,.84,.3,1)' })
     feedback.onfinish = () => note.element.remove()
 
     this.combo += 1
     const grade = confidence >= 0.74 ? 'PERFECT' : confidence >= 0.5 ? 'GREAT' : 'GOOD'
-    const gradeColor = confidence >= 0.74 ? '#fff' : confidence >= 0.5 ? '#8fd7ff' : '#9cf2c5'
+    const gradeColor = impactColor
     const basePoints = grade === 'PERFECT' ? 1_000 : grade === 'GREAT' ? 650 : 300
     const comboBonus = Math.min(500, Math.max(0, this.combo - 1) * 25)
     const gainedPoints = basePoints + comboBonus
@@ -932,6 +944,7 @@ export class BeatSurface {
     this.recordAccuracy(grade === 'PERFECT' ? 1 : grade === 'GREAT' ? 0.82 : 0.55)
     this.showGrade(grade, gradeColor, note.judgeX, note.judgeY + 2)
     this.showHitRing(note.judgeX, note.judgeY + 2, confidence)
+    this.showHitParticles(note.judgeX, note.judgeY + 2, confidence)
     const surfaceRect = this.judgementSurface()?.target.getBoundingClientRect()
     this.showKeyStrike(note.judgeX, note.judgeY, surfaceRect?.height ?? 28, confidence)
     if (this.combo >= 25) this.showGoldStreak(note.judgeX, note.judgeY)
@@ -959,7 +972,9 @@ export class BeatSurface {
     this.lastJudgementStrikeAt = now
     const comboGlow = this.combo >= 5 ? 1.9 : 1
     const glow = (7 + confidence * 13) * comboGlow
-    const flashColor = this.combo >= 10 ? '#ffd76a' : '#fff'
+    const flashColor = this.combo >= 10 || confidence >= 0.74
+      ? '#ffd76a'
+      : confidence >= 0.5 ? '#8fd7ff' : '#9cf2c5'
     for (const animation of this.judgementLine.getAnimations()) animation.cancel()
     this.judgementLine.animate([
       { opacity: 0.65, transform: 'scaleX(1) scaleY(1)', boxShadow: '0 0 0 transparent' },
@@ -982,6 +997,7 @@ export class BeatSurface {
     this.predictedNote = undefined
     if (note !== undefined) {
       for (const animation of note.element.getAnimations()) animation.cancel()
+      note.element.classList.add('dsh-bgm-note--impact')
       note.element.style.left = `${note.landingLeft}px`
       note.element.style.top = `${note.landingTop}px`
       const fade = note.element.animate([
@@ -1029,26 +1045,70 @@ export class BeatSurface {
   }
 
   private showHitRing(x: number, y: number, confidence: number): void {
-    const ring = document.createElement('span')
-    ring.className = 'dsh-bgm-hit-ring'
-    ring.style.left = `${x}px`
-    ring.style.top = `${y}px`
     const comboBoost = this.combo >= 5
     const goldAccent = this.combo >= 10
-    ring.style.color = goldAccent
+    const color = goldAccent || confidence >= 0.74
       ? '#ffd76a'
-      : confidence >= 0.74 ? '#fff' : confidence >= 0.5 ? '#8fd7ff' : '#9cf2c5'
+      : confidence >= 0.5 ? '#8fd7ff' : '#9cf2c5'
     const size = (confidence >= 0.74 ? 24 : 20) + (comboBoost ? 4 : 0)
-    ring.style.width = `${size}px`
-    ring.style.height = `${size}px`
-    this.overlay.append(ring)
     const scale = (confidence >= 0.74 ? 2.65 : 2.2) + (comboBoost ? 0.35 : 0)
-    const animation = ring.animate([
-      { opacity: comboBoost ? 1 : 0.9, transform: 'translate(-50%, -50%) scale(.5)' },
-      { opacity: 0.58, offset: 0.35 },
-      { opacity: 0, transform: `translate(-50%, -50%) scale(${scale})` },
-    ], { duration: confidence >= 0.74 ? 460 : 400, easing: 'cubic-bezier(.12,.7,.22,1)' })
-    animation.onfinish = () => ring.remove()
+    for (let index = 0; index < 2; index += 1) {
+      const ring = document.createElement('span')
+      ring.className = index === 0 ? 'dsh-bgm-hit-ring' : 'dsh-bgm-hit-ring dsh-bgm-hit-ring--echo'
+      ring.style.left = `${x}px`
+      ring.style.top = `${y}px`
+      ring.style.color = color
+      ring.style.width = `${size - index * 4}px`
+      ring.style.height = `${size - index * 4}px`
+      this.overlay.append(ring)
+      const ringScale = scale - index * 0.42
+      const animation = ring.animate([
+        { opacity: index === 0 ? 0.88 : 0.62, transform: 'translate(-50%, -50%) scale(.42)' },
+        { opacity: index === 0 ? 0.5 : 0.4, offset: 0.34 },
+        { opacity: 0, transform: `translate(-50%, -50%) scale(${ringScale.toFixed(2)})` },
+      ], {
+        duration: (confidence >= 0.74 ? 460 : 410) + index * 70,
+        delay: index * 28,
+        easing: 'cubic-bezier(.12,.7,.22,1)',
+      })
+      animation.onfinish = () => ring.remove()
+    }
+  }
+
+  /** Local 6/8/10-particle burst; colors match the judgement and never flash the page. */
+  private showHitParticles(x: number, y: number, confidence: number): void {
+    const count = confidence >= 0.74 ? 10 : confidence >= 0.5 ? 8 : 6
+    const color = confidence >= 0.74 ? '#ffd76a' : confidence >= 0.5 ? '#8fd7ff' : '#9cf2c5'
+    const seed = this.judgementIndex * 1_009 + this.combo * 137
+    for (let index = 0; index < count; index += 1) {
+      const particle = document.createElement('span')
+      particle.className = 'dsh-bgm-hit-particle'
+      particle.style.left = `${x}px`
+      particle.style.top = `${y}px`
+      particle.style.color = color
+      const size = 2 + hashUnit(seed, index + 31) * 1.4
+      particle.style.width = `${size.toFixed(2)}px`
+      particle.style.height = `${size.toFixed(2)}px`
+      this.overlay.append(particle)
+
+      const angle = index / count * Math.PI * 2 + hashUnit(seed, index + 61) * 0.6
+      const distance = 14 + hashUnit(seed, index + 97) * 22
+      const deltaX = Math.cos(angle) * distance
+      const deltaY = Math.sin(angle) * distance
+      const animation = particle.animate([
+        { opacity: 1, transform: 'translate(-50%, -50%) scale(1)' },
+        {
+          opacity: 0,
+          transform: `translate(calc(-50% + ${deltaX.toFixed(1)}px), calc(-50% + ${deltaY.toFixed(1)}px)) scale(.4)`,
+          offset: 0.65,
+        },
+        {
+          opacity: 0,
+          transform: `translate(calc(-50% + ${(deltaX * 1.15).toFixed(1)}px), calc(-50% + ${(deltaY * 1.15).toFixed(1)}px)) scale(.2)`,
+        },
+      ], { duration: 420 + confidence * 90, easing: 'cubic-bezier(.14,.75,.24,1)' })
+      animation.onfinish = () => particle.remove()
+    }
   }
 
   /** A tiny local keycap at the judge point: hard press in 8ms, then rebound. */
@@ -1058,7 +1118,9 @@ export class BeatSurface {
     key.style.left = `${x}px`
     key.style.top = `${y}px`
     key.style.height = `${clamp(rowHeight + 8, 24, 52)}px`
-    key.style.color = this.combo >= 10 ? '#ffd76a' : '#fff'
+    key.style.color = this.combo >= 10 || confidence >= 0.74
+      ? '#ffd76a'
+      : confidence >= 0.5 ? '#8fd7ff' : '#9cf2c5'
     this.overlay.append(key)
     const peakOpacity = clamp(0.3 + confidence * 0.28 + (this.combo >= 5 ? 0.12 : 0), 0, 0.72)
     const animation = key.animate([
@@ -1462,8 +1524,8 @@ export class BeatSurface {
       : strong
         ? `0 ${(8 + cue.energy * 5).toFixed(1)}px 3px color-mix(in srgb, currentColor 38%, transparent), 0 0 8px color-mix(in srgb, currentColor 55%, transparent)`
         : weak
-          ? '0 0 3px color-mix(in srgb, currentColor 30%, white)'
-          : '0 0 7px color-mix(in srgb, currentColor 58%, white)'
+          ? '0 0 3px color-mix(in srgb, currentColor 30%, #8fd7ff)'
+          : '0 0 7px color-mix(in srgb, currentColor 58%, #8fd7ff)'
 
     for (let index = 0; index < glyphs.length; index += 1) {
       const glyph = glyphs[index]
@@ -1661,6 +1723,7 @@ export class BeatSurface {
     this.accuracyLabel.textContent = 'ACC 100.00%'
     for (const grade of this.overlay.querySelectorAll('.dsh-bgm-grade-float')) grade.remove()
     for (const ring of this.overlay.querySelectorAll('.dsh-bgm-hit-ring')) ring.remove()
+    for (const particle of this.overlay.querySelectorAll('.dsh-bgm-hit-particle')) particle.remove()
     for (const key of this.overlay.querySelectorAll('.dsh-bgm-hit-key')) key.remove()
     for (const streak of this.overlay.querySelectorAll('.dsh-bgm-gold-streak')) streak.remove()
     for (const ripple of this.overlay.querySelectorAll('.dsh-bgm-flow-ripple')) ripple.remove()
