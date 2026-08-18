@@ -258,7 +258,6 @@ class BeatDetector {
   private fluxDeviation = 0
   private lastDetectedAtValue = 0
   private lastPulseAt = 0
-  private readonly intervals: number[] = []
 
   sample(frame: RhythmFrame, now: number): BeatSample | undefined {
     const bassRise = Math.max(0, frame.bass - this.previousBass)
@@ -274,10 +273,6 @@ class BeatDetector {
     const sinceDetected = now - this.lastDetectedAtValue
     const detected = flux >= threshold && sinceDetected >= 180
     if (detected) {
-      if (this.lastDetectedAtValue > 0 && sinceDetected >= 250 && sinceDetected <= 1_500) {
-        this.intervals.push(sinceDetected)
-        if (this.intervals.length > 8) this.intervals.shift()
-      }
       this.lastDetectedAtValue = now
       this.lastPulseAt = now
       const confidence = clamp(0.42 + (flux - threshold) / Math.max(0.08, threshold * 1.6), 0, 1)
@@ -291,6 +286,57 @@ class BeatDetector {
     return undefined
   }
 
+  reset(): void {
+    this.previousBass = 0
+    this.previousRms = 0
+    this.averageFlux = 0
+    this.fluxDeviation = 0
+    this.lastDetectedAtValue = 0
+    this.lastPulseAt = 0
+  }
+}
+
+/** Mid/treble change detector for the information-flow lane, independent of kick hits. */
+class FlowDetector {
+  private previousMid = 0
+  private previousTreble = 0
+  private averageFlux = 0
+  private fluxDeviation = 0
+  private lastDetectedAtValue = 0
+  private lastPulseAt = 0
+  private readonly intervals: number[] = []
+
+  sample(frame: RhythmFrame, now: number): BeatSample | undefined {
+    const midDelta = Math.abs(frame.mid - this.previousMid)
+    const trebleDelta = Math.abs(frame.treble - this.previousTreble)
+    this.previousMid = frame.mid
+    this.previousTreble = frame.treble
+
+    const flux = midDelta * 0.9 + trebleDelta * 1.25 + frame.onset * 0.16
+    const delta = Math.abs(flux - this.averageFlux)
+    this.averageFlux = this.averageFlux * 0.9 + flux * 0.1
+    this.fluxDeviation = this.fluxDeviation * 0.86 + delta * 0.14
+    const threshold = Math.max(0.052, this.averageFlux + this.fluxDeviation * 0.78)
+    const sinceDetected = now - this.lastDetectedAtValue
+    const detected = flux >= threshold && sinceDetected >= 220
+    if (detected) {
+      if (this.lastDetectedAtValue > 0 && sinceDetected >= 280 && sinceDetected <= 1_800) {
+        this.intervals.push(sinceDetected)
+        if (this.intervals.length > 8) this.intervals.shift()
+      }
+      this.lastDetectedAtValue = now
+      this.lastPulseAt = now
+      const confidence = clamp(0.4 + (flux - threshold) / Math.max(0.06, threshold * 1.5), 0, 1)
+      return { kind: 'detected', confidence }
+    }
+
+    const melodicFallback = now - this.lastPulseAt >= 760
+      && (frame.mid > SOUND_THRESHOLD || frame.treble > SOUND_THRESHOLD)
+    if (!melodicFallback) return undefined
+    this.lastPulseAt = now
+    return { kind: 'fallback', confidence: 0.2 }
+  }
+
   periodMs(): number | undefined {
     if (this.intervals.length < 2) return undefined
     const sorted = [...this.intervals].sort((a, b) => a - b)
@@ -302,49 +348,13 @@ class BeatDetector {
   }
 
   reset(): void {
-    this.previousBass = 0
-    this.previousRms = 0
+    this.previousMid = 0
+    this.previousTreble = 0
     this.averageFlux = 0
     this.fluxDeviation = 0
     this.lastDetectedAtValue = 0
     this.lastPulseAt = 0
     this.intervals.length = 0
-  }
-}
-
-/** Mid/treble change detector for the information-flow lane, independent of kick hits. */
-class FlowDetector {
-  private previousMid = 0
-  private previousTreble = 0
-  private averageFlux = 0
-  private fluxDeviation = 0
-  private lastHitAt = 0
-
-  sample(frame: RhythmFrame, now: number): boolean {
-    const midDelta = Math.abs(frame.mid - this.previousMid)
-    const trebleDelta = Math.abs(frame.treble - this.previousTreble)
-    this.previousMid = frame.mid
-    this.previousTreble = frame.treble
-
-    const flux = midDelta * 0.9 + trebleDelta * 1.25 + frame.onset * 0.16
-    const delta = Math.abs(flux - this.averageFlux)
-    this.averageFlux = this.averageFlux * 0.9 + flux * 0.1
-    this.fluxDeviation = this.fluxDeviation * 0.86 + delta * 0.14
-    const threshold = Math.max(0.052, this.averageFlux + this.fluxDeviation * 0.78)
-    const sinceHit = now - this.lastHitAt
-    const detected = flux >= threshold && sinceHit >= 220
-    const melodicFallback = sinceHit >= 760 && (frame.mid > SOUND_THRESHOLD || frame.treble > SOUND_THRESHOLD)
-    if (!detected && !melodicFallback) return false
-    this.lastHitAt = now
-    return true
-  }
-
-  reset(): void {
-    this.previousMid = 0
-    this.previousTreble = 0
-    this.averageFlux = 0
-    this.fluxDeviation = 0
-    this.lastHitAt = 0
   }
 }
 
@@ -413,6 +423,8 @@ export class BeatSurface {
   private readonly judgementLine = document.createElement('div')
   private readonly comboLabel = document.createElement('div')
   private readonly gradeLabel = document.createElement('div')
+  private readonly scoreLabel = document.createElement('div')
+  private readonly scoreDeltaLabel = document.createElement('div')
   private readonly surfaces = new Map<HTMLElement, Surface>()
   private readonly observer: MutationObserver
   private readonly beatDetector = new BeatDetector()
@@ -432,6 +444,7 @@ export class BeatSurface {
   private predictedNote: PredictedNote | undefined
   private predictionTargetAt: number | undefined
   private combo = 0
+  private score = 0
   private noteIndex = 0
 
   constructor() {
@@ -440,10 +453,21 @@ export class BeatSurface {
     this.judgementLine.className = 'dsh-bgm-judgement-line'
     this.comboLabel.className = 'dsh-bgm-combo'
     this.gradeLabel.className = 'dsh-bgm-grade'
+    this.scoreLabel.className = 'dsh-bgm-score'
+    this.scoreDeltaLabel.className = 'dsh-bgm-score-delta'
     this.judgementLine.hidden = true
     this.comboLabel.hidden = true
     this.gradeLabel.hidden = true
-    this.overlay.append(this.judgementLine, this.comboLabel, this.gradeLabel)
+    this.scoreLabel.hidden = true
+    this.scoreDeltaLabel.hidden = true
+    this.scoreLabel.textContent = 'SCORE 0000000'
+    this.overlay.append(
+      this.judgementLine,
+      this.comboLabel,
+      this.gradeLabel,
+      this.scoreLabel,
+      this.scoreDeltaLabel,
+    )
     this.observer = new MutationObserver((records) => {
       for (const record of records) {
         if (this.overlay.contains(record.target)) continue
@@ -522,16 +546,16 @@ export class BeatSurface {
     if (this.active) {
       const now = performance.now()
       const downbeatSample = this.beatDetector.sample(frame, now)
-      const flowHit = this.flowDetector.sample(frame, now)
-      this.updatePrediction(now, downbeatSample)
-      if (downbeatSample === undefined && !flowHit) return
+      const flowSample = this.flowDetector.sample(frame, now)
+      this.updatePrediction(now, flowSample)
+      if (downbeatSample === undefined && flowSample === undefined) return
       if (this.refreshFrame !== undefined) cancelAnimationFrame(this.refreshFrame)
       if (this.refreshTimer !== undefined) window.clearTimeout(this.refreshTimer)
       this.refreshFrame = undefined
       this.refreshTimer = undefined
       this.refresh()
       if (downbeatSample !== undefined) this.startCue('downbeat', frame, now)
-      if (flowHit) this.startCue('flow', frame, now)
+      if (flowSample !== undefined) this.startCue('flow', frame, now)
     }
   }
 
@@ -552,7 +576,6 @@ export class BeatSurface {
 
   private judgementSurface(): Surface | undefined {
     return [...this.surfaces.values()].find(surface => surface.kind !== 'deep-diving')
-      ?? [...this.surfaces.values()].find(surface => surface.kind === 'deep-diving')
   }
 
   private updateJudgementAnchor(): void {
@@ -561,6 +584,8 @@ export class BeatSurface {
       this.judgementLine.hidden = true
       this.comboLabel.hidden = true
       this.gradeLabel.hidden = true
+      this.scoreLabel.hidden = true
+      this.scoreDeltaLabel.hidden = true
       this.predictedNote?.element.remove()
       this.predictedNote = undefined
       return
@@ -568,6 +593,10 @@ export class BeatSurface {
     const rect = surface.target.getBoundingClientRect()
     if (!isVisible(rect)) {
       this.judgementLine.hidden = true
+      this.comboLabel.hidden = true
+      this.gradeLabel.hidden = true
+      this.scoreLabel.hidden = true
+      this.scoreDeltaLabel.hidden = true
       this.predictedNote?.element.remove()
       this.predictedNote = undefined
       return
@@ -580,6 +609,11 @@ export class BeatSurface {
     this.comboLabel.style.top = `${rect.top - 17}px`
     this.gradeLabel.style.left = `${rect.left + 7}px`
     this.gradeLabel.style.top = `${rect.bottom + 3}px`
+    this.scoreLabel.hidden = false
+    this.scoreLabel.style.left = `${Math.max(rect.left + 72, rect.right - 116)}px`
+    this.scoreLabel.style.top = `${rect.top - 17}px`
+    this.scoreDeltaLabel.style.left = `${Math.max(rect.left + 80, rect.right - 58)}px`
+    this.scoreDeltaLabel.style.top = `${rect.bottom + 3}px`
     if (this.predictedNote !== undefined && this.predictedNote.anchor !== surface.target) {
       this.predictedNote.element.remove()
       this.predictedNote = undefined
@@ -587,8 +621,8 @@ export class BeatSurface {
   }
 
   private updatePrediction(now: number, sample: BeatSample | undefined): void {
-    const periodMs = this.beatDetector.periodMs()
-    const detectedAt = this.beatDetector.lastDetectedAt()
+    const periodMs = this.flowDetector.periodMs()
+    const detectedAt = this.flowDetector.lastDetectedAt()
     if (periodMs === undefined || detectedAt === undefined) return
     const hitWindow = clamp(periodMs * 0.16, 72, 155)
 
@@ -604,13 +638,18 @@ export class BeatSurface {
     }
 
     let targetAt = this.predictionTargetAt ?? detectedAt + periodMs
+    let missFeedbackShown = false
     if (this.predictedNote !== undefined && now > this.predictedNote.targetAt + hitWindow) {
       const missedTargetAt = this.predictedNote.targetAt
       this.resolveMiss(true)
+      missFeedbackShown = true
       targetAt = missedTargetAt + periodMs
     }
     while (now > targetAt + hitWindow) {
-      if (this.combo > 0) this.resolveMiss(true)
+      if (!missFeedbackShown && this.combo > 0) {
+        this.resolveMiss(true)
+        missFeedbackShown = true
+      }
       targetAt += periodMs
     }
     this.predictionTargetAt = targetAt
@@ -673,7 +712,13 @@ export class BeatSurface {
 
     this.combo += 1
     const grade = confidence >= 0.74 ? 'PERFECT' : confidence >= 0.5 ? 'GREAT' : 'GOOD'
-    this.showGrade(grade, confidence >= 0.74 ? '#fff' : confidence >= 0.5 ? '#8fd7ff' : '#9cf2c5')
+    const gradeColor = confidence >= 0.74 ? '#fff' : confidence >= 0.5 ? '#8fd7ff' : '#9cf2c5'
+    const basePoints = grade === 'PERFECT' ? 1_000 : grade === 'GREAT' ? 650 : 300
+    const comboBonus = Math.min(500, Math.max(0, this.combo - 1) * 25)
+    const gainedPoints = basePoints + comboBonus
+    this.score = Math.min(9_999_999, this.score + gainedPoints)
+    this.showGrade(grade, gradeColor)
+    this.showScoreGain(gainedPoints, gradeColor)
     this.comboLabel.hidden = this.combo < 2
     this.comboLabel.textContent = `${this.combo} COMBO`
     const glow = 5 + confidence * 13
@@ -689,6 +734,8 @@ export class BeatSurface {
     this.predictedNote = undefined
     if (note !== undefined) {
       for (const animation of note.element.getAnimations()) animation.cancel()
+      note.element.style.left = `${note.judgeX}px`
+      note.element.style.top = `${note.judgeY}px`
       const fade = note.element.animate([
         { opacity: 0.75, transform: 'scale(1)' },
         { opacity: 0, transform: 'translateY(3px) scale(.72)', color: '#ff7a90' },
@@ -697,7 +744,38 @@ export class BeatSurface {
     }
     this.combo = 0
     this.comboLabel.hidden = true
-    if (showFeedback) this.showGrade('MISS', '#ff7a90')
+    if (showFeedback) {
+      this.showGrade('MISS', '#ff7a90')
+      for (const animation of this.scoreLabel.getAnimations()) animation.cancel()
+      this.scoreLabel.animate([
+        { transform: 'translateX(0)', color: 'currentColor' },
+        { transform: 'translateX(-2px)', color: '#ff7a90', offset: 0.28 },
+        { transform: 'translateX(1.5px)', color: '#ff7a90', offset: 0.58 },
+        { transform: 'translateX(0)', color: 'currentColor' },
+      ], { duration: 210, easing: 'ease-out' })
+    }
+  }
+
+  private showScoreGain(points: number, color: string): void {
+    this.scoreLabel.hidden = false
+    this.scoreLabel.textContent = `SCORE ${String(this.score).padStart(7, '0')}`
+    for (const animation of this.scoreLabel.getAnimations()) animation.cancel()
+    this.scoreLabel.animate([
+      { transform: 'scale(1)', filter: 'brightness(1)' },
+      { transform: 'scale(1.075)', filter: 'brightness(1.5)', offset: 0.34 },
+      { transform: 'scale(1)', filter: 'brightness(1)' },
+    ], { duration: 320, easing: 'cubic-bezier(.2,.82,.3,1)' })
+
+    for (const animation of this.scoreDeltaLabel.getAnimations()) animation.cancel()
+    this.scoreDeltaLabel.hidden = false
+    this.scoreDeltaLabel.textContent = `+${points}`
+    this.scoreDeltaLabel.style.color = color
+    const animation = this.scoreDeltaLabel.animate([
+      { opacity: 0, transform: 'translateY(3px) scale(.88)' },
+      { opacity: 1, transform: 'translateY(0) scale(1.08)', offset: 0.28 },
+      { opacity: 0, transform: 'translateY(-5px) scale(.96)' },
+    ], { duration: 680, easing: 'cubic-bezier(.18,.8,.28,1)' })
+    animation.onfinish = () => { this.scoreDeltaLabel.hidden = true }
   }
 
   private showGrade(text: string, color: string): void {
@@ -978,10 +1056,14 @@ export class BeatSurface {
     this.predictedNote = undefined
     this.predictionTargetAt = undefined
     this.combo = 0
+    this.score = 0
     this.noteIndex = 0
     this.judgementLine.hidden = true
     this.comboLabel.hidden = true
     this.gradeLabel.hidden = true
+    this.scoreLabel.hidden = true
+    this.scoreLabel.textContent = 'SCORE 0000000'
+    this.scoreDeltaLabel.hidden = true
     for (const surface of this.surfaces.values()) this.removeSurface(surface)
     this.surfaces.clear()
   }

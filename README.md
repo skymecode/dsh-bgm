@@ -14,11 +14,13 @@ they never restart it, and clipped text never enters the lane. Choreography is
 composed from trigger order, motion path and attack feel, yielding about 60
 downbeat combinations and more than 200 non-repeating flow combinations.
 
-After two reliable beat intervals, the latest activity row becomes a judgement
+After two reliable flow intervals, the latest activity row becomes a judgement
 lane. A glyph launches from its trailing edge toward a fixed leading line at
 `lastHit + period`; travel is BPM-locked to `clamp(period * 0.75, 350ms, 900ms)`.
-Detected onset confidence grades the arrival as GOOD, GREAT or PERFECT. Hits
-build Combo, while an expected beat that misses its timing window resets it.
+Detected mid/treble confidence grades the arrival as GOOD, GREAT or PERFECT, so
+the note lane and the row wave share one clock while Deep Diving stays on the
+bass/onset clock. Hits build Combo and a seven-digit score with local point
+bursts; an expected pulse that misses its timing window resets Combo.
 Final answers, the page background and brightness remain unchanged.
 Each hit is a discrete wave rather than continuous line jitter. Screen-reader
 only labels remain accessible and are excluded from the visual mirror. Raw

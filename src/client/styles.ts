@@ -35,7 +35,9 @@ const stylesheet = `
 }
 
 .dsh-bgm-combo,
-.dsh-bgm-grade {
+.dsh-bgm-grade,
+.dsh-bgm-score,
+.dsh-bgm-score-delta {
   position: fixed;
   z-index: 2147483002;
   pointer-events: none;
@@ -53,10 +55,28 @@ const stylesheet = `
   transform-origin: 0 50%;
 }
 
+.dsh-bgm-score {
+  width: 110px;
+  color: var(--dsw-static-deepseek-300, #a9c8ff);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .075em;
+  transform-origin: 100% 50%;
+}
+
+.dsh-bgm-score-delta {
+  width: 54px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  transform-origin: 100% 50%;
+}
+
 .dsh-bgm-note[hidden],
 .dsh-bgm-judgement-line[hidden],
 .dsh-bgm-combo[hidden],
-.dsh-bgm-grade[hidden] {
+.dsh-bgm-grade[hidden],
+.dsh-bgm-score[hidden],
+.dsh-bgm-score-delta[hidden] {
   display: none !important;
 }
 
@@ -88,7 +108,9 @@ html[data-dsh-bgm-active] [data-dsh-bgm-reactive='deep-diving'][data-dsh-bgm-mas
   .dsh-bgm-note,
   .dsh-bgm-judgement-line,
   .dsh-bgm-combo,
-  .dsh-bgm-grade { display: none !important; }
+  .dsh-bgm-grade,
+  .dsh-bgm-score,
+  .dsh-bgm-score-delta { display: none !important; }
 }
 `
 
