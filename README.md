@@ -26,8 +26,10 @@ hit rings expand on successful notes, and 10/25/50 Combo milestones turn the
 line gold. An expected pulse that misses its timing window resets Combo.
 Very short Bash/Read calls trigger an immediate entry wave and retain only their
 latest row for 1.6 seconds, so their rhythm-game feedback survives completion.
-Final answers never animate. True downbeats add only a transient 2.2–4% soft
-conversation-layer glow; there is no full-screen white flash.
+Final answers never animate: once the official final-text stream begins, the
+visual layer tears down and ignores subsequent token mutations. True downbeats
+add only a transient 2.2–4% soft conversation-layer glow; there is no
+full-screen white flash.
 Each hit is a discrete wave rather than continuous line jitter. Screen-reader
 only labels remain accessible and are excluded from the visual mirror. Raw
 audio is never persisted or sent to the browser.

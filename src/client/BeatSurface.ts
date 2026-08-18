@@ -123,6 +123,12 @@ const ACTIVITY_MARKER = [
   '[data-disclosure-row]',
   '[role="status"]',
 ].join(',')
+const LIVE_ACTIVITY_SELECTOR = [
+  '[data-variant="think"][data-state="running"]',
+  '[data-chat-call-id][data-state="running"]',
+  '[data-chat-call-id] [data-state="running"]',
+].join(',')
+const FINAL_STREAM_SELECTOR = '[data-chat-flow-kind="assistant-step"] [data-streaming]'
 
 const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
 
@@ -376,6 +382,20 @@ function latestCandidate(candidates: readonly Candidate[]): Candidate | undefine
     .at(-1)
 }
 
+function latestFlow(): HTMLElement | undefined {
+  return [...document.querySelectorAll<HTMLElement>('[data-chat-flow]')]
+    .filter(flow => isVisible(flow.getBoundingClientRect()))
+    .at(-1)
+}
+
+function isFinalAnswerStreaming(): boolean {
+  const flows = document.querySelectorAll<HTMLElement>('[data-chat-flow]')
+  const flow = flows.item(flows.length - 1) ?? undefined
+  return flow !== undefined
+    && flow.querySelector(FINAL_STREAM_SELECTOR) !== null
+    && flow.querySelector(LIVE_ACTIVITY_SELECTOR) === null
+}
+
 function disclosureTarget(root: HTMLElement): HTMLElement {
   return root.querySelector<HTMLElement>('[data-disclosure-row]')
     ?? root.closest<HTMLElement>('[data-disclosure-row]')
@@ -384,9 +404,7 @@ function disclosureTarget(root: HTMLElement): HTMLElement {
 
 /** At most one current activity row plus the live turn-level Deep Diving row. */
 function targetCandidates(): Candidate[] {
-  const flows = [...document.querySelectorAll<HTMLElement>('[data-chat-flow]')]
-    .filter(flow => isVisible(flow.getBoundingClientRect()))
-  const flow = flows.at(-1)
+  const flow = latestFlow()
   if (flow === undefined) return []
 
   const deepDiving = latestCandidate(
@@ -428,6 +446,12 @@ function nodeHasActivity(node: Node): boolean {
   return node.matches(ACTIVITY_MARKER) || node.querySelector(ACTIVITY_MARKER) !== null
 }
 
+function nodeHasFinalStreamMarker(node: Node): boolean {
+  if (!(node instanceof Element)) return false
+  const selector = '[data-streaming], [data-chat-flow-kind="assistant-step"]'
+  return node.matches(selector) || node.querySelector(selector) !== null
+}
+
 /**
  * Paint a small pointer-transparent per-grapheme layer over only the current
  * activity row. React retains ownership of every original text node.
@@ -452,6 +476,7 @@ export class BeatSurface {
   private retainedActivity: Candidate | undefined
   private retainActivityUntil = 0
   private currentActivityTarget: HTMLElement | undefined
+  private finalOutputStreaming = false
   private lastRefreshAt = 0
   private active = false
   private downbeatIndex = 0
@@ -467,6 +492,7 @@ export class BeatSurface {
   private judgedCount = 0
   private accuracyPoints = 0
   private noteIndex = 0
+  private judgementIndex = 0
 
   constructor() {
     this.overlay.dataset.dshBgmOverlay = ''
@@ -493,6 +519,23 @@ export class BeatSurface {
       this.accuracyLabel,
     )
     this.observer = new MutationObserver((records) => {
+      const finalStateMayChange = records.some(record => record.type === 'attributes'
+        || (record.type === 'childList' && (
+          [...record.addedNodes].some(nodeHasFinalStreamMarker)
+          || [...record.removedNodes].some(nodeHasFinalStreamMarker)
+        )))
+      if (this.finalOutputStreaming && !finalStateMayChange) return
+      if (finalStateMayChange) {
+        const finalStreaming = isFinalAnswerStreaming()
+        if (finalStreaming) {
+          if (!this.finalOutputStreaming) {
+            this.finalOutputStreaming = true
+            this.suspendVisualsForFinal()
+          }
+          return
+        }
+        this.finalOutputStreaming = false
+      }
       for (const record of records) {
         if (this.overlay.contains(record.target)) continue
         const remembersQuickActivity = this.rememberQuickActivity(record.target)
@@ -511,6 +554,40 @@ export class BeatSurface {
         }
       }
     })
+  }
+
+  private suspendVisualsForFinal(): void {
+    if (this.refreshFrame !== undefined) cancelAnimationFrame(this.refreshFrame)
+    if (this.refreshTimer !== undefined) window.clearTimeout(this.refreshTimer)
+    this.refreshFrame = undefined
+    this.refreshTimer = undefined
+    this.predictedNote?.element.remove()
+    this.predictedNote = undefined
+    this.predictionTargetAt = undefined
+    this.retainedActivity = undefined
+    this.retainActivityUntil = 0
+    this.currentActivityTarget = undefined
+    this.currentDownbeatCue = undefined
+    this.currentFlowCue = undefined
+    this.combo = 0
+    this.score = 0
+    this.judgedCount = 0
+    this.accuracyPoints = 0
+    this.noteIndex = 0
+    this.judgementIndex = 0
+    for (const animation of this.backgroundPulse.getAnimations()) animation.cancel()
+    for (const animation of this.judgementLine.getAnimations()) animation.cancel()
+    this.judgementLine.hidden = true
+    this.comboLabel.hidden = true
+    this.scoreLabel.hidden = true
+    this.scoreLabel.textContent = 'SCORE 0000000'
+    this.scoreDeltaLabel.hidden = true
+    this.accuracyLabel.hidden = true
+    this.accuracyLabel.textContent = 'ACC 100.00%'
+    for (const grade of this.overlay.querySelectorAll('.dsh-bgm-grade-float')) grade.remove()
+    for (const ring of this.overlay.querySelectorAll('.dsh-bgm-hit-ring')) ring.remove()
+    for (const surface of this.surfaces.values()) this.removeSurface(surface)
+    this.surfaces.clear()
   }
 
   private rememberQuickActivity(node: Node, includeDescendant = false): boolean {
@@ -534,7 +611,7 @@ export class BeatSurface {
       childList: true,
       characterData: true,
       attributes: true,
-      attributeFilter: ['data-state', 'data-chat-flow-kind'],
+      attributeFilter: ['data-state', 'data-chat-flow-kind', 'data-streaming'],
     })
     document.addEventListener('scroll', this.scheduleRefresh, true)
     window.addEventListener('resize', this.scheduleRefresh)
@@ -544,7 +621,8 @@ export class BeatSurface {
   }
 
   private readonly scheduleRefresh = (): void => {
-    if (!this.active || this.refreshFrame !== undefined || this.refreshTimer !== undefined) return
+    if (!this.active || this.finalOutputStreaming
+      || this.refreshFrame !== undefined || this.refreshTimer !== undefined) return
     const wait = Math.max(0, STREAM_REFRESH_INTERVAL_MS - (performance.now() - this.lastRefreshAt))
     if (wait > 0) {
       this.refreshTimer = window.setTimeout(() => {
@@ -589,6 +667,7 @@ export class BeatSurface {
       const now = performance.now()
       const downbeatSample = this.beatDetector.sample(frame, now)
       const flowSample = this.flowDetector.sample(frame, now)
+      if (this.finalOutputStreaming) return
       if (downbeatSample?.kind === 'detected' && this.surfaces.size > 0) {
         this.pulseBackground(downbeatSample.confidence)
       }
@@ -615,7 +694,12 @@ export class BeatSurface {
   }
 
   private refresh(): void {
-    if (!this.active) return
+    if (!this.active || this.finalOutputStreaming) return
+    if (isFinalAnswerStreaming()) {
+      this.finalOutputStreaming = true
+      this.suspendVisualsForFinal()
+      return
+    }
     const now = performance.now()
     this.lastRefreshAt = now
     const liveWanted = targetCandidates()
@@ -687,12 +771,22 @@ export class BeatSurface {
     this.comboLabel.style.left = `${rect.left + 7}px`
     this.comboLabel.style.top = `${rect.top - 17}px`
     this.scoreLabel.hidden = false
-    const scoreLeft = Math.max(rect.left + 158, rect.right - 116)
+    const scoreWidth = Math.min(110, rect.width)
+    const accuracyWidth = Math.min(80, rect.width)
+    const scoreLeft = rect.right - scoreWidth
+    const comboReservedRight = rect.left + 78
+    const scoreSharesComboRow = scoreLeft >= comboReservedRight + 8
+    const inlineAccuracyLeft = scoreLeft - accuracyWidth - 6
+    const accuracySharesComboRow = scoreSharesComboRow
+      && inlineAccuracyLeft >= comboReservedRight + 8
+    const scoreTop = scoreSharesComboRow ? rect.top - 17 : rect.top - 30
+    this.scoreLabel.style.width = `${scoreWidth}px`
     this.scoreLabel.style.left = `${scoreLeft}px`
-    this.scoreLabel.style.top = `${rect.top - 17}px`
+    this.scoreLabel.style.top = `${scoreTop}px`
     this.accuracyLabel.hidden = false
-    this.accuracyLabel.style.left = `${scoreLeft - 84}px`
-    this.accuracyLabel.style.top = `${rect.top - 17}px`
+    this.accuracyLabel.style.width = `${accuracyWidth}px`
+    this.accuracyLabel.style.left = `${accuracySharesComboRow ? inlineAccuracyLeft : rect.right - accuracyWidth}px`
+    this.accuracyLabel.style.top = `${accuracySharesComboRow ? rect.top - 17 : scoreTop - 13}px`
     this.scoreDeltaLabel.style.left = `${Math.max(rect.left + 80, rect.right - 58)}px`
     this.scoreDeltaLabel.style.top = `${rect.bottom + 3}px`
     if (this.predictedNote !== undefined && this.predictedNote.anchor !== surface.target) {
@@ -845,6 +939,7 @@ export class BeatSurface {
     this.comboLabel.hidden = true
     if (showFeedback) {
       this.recordAccuracy(0)
+      this.flashMissLine()
       const x = note?.judgeX ?? fallbackPoint?.x
       const y = note?.judgeY ?? fallbackPoint?.y
       if (x !== undefined && y !== undefined) this.showGrade('MISS', '#ff7a90', x, y)
@@ -858,7 +953,18 @@ export class BeatSurface {
     }
   }
 
+  private flashMissLine(): void {
+    if (this.judgementLine.hidden) return
+    for (const animation of this.judgementLine.getAnimations()) animation.cancel()
+    this.judgementLine.animate([
+      { opacity: 0.65, transform: 'scaleX(1)', boxShadow: '0 0 0 transparent' },
+      { opacity: 1, transform: 'scaleX(2.25)', boxShadow: '0 0 14px #ff516f', background: '#ff516f', offset: 0.3 },
+      { opacity: 0.65, transform: 'scaleX(1)', boxShadow: '0 0 0 transparent' },
+    ], { duration: 520, easing: 'cubic-bezier(.18,.72,.24,1)' })
+  }
+
   private recordAccuracy(points: number): void {
+    this.judgementIndex += 1
     this.judgedCount += 1
     this.accuracyPoints += points
     const percentage = this.accuracyPoints / this.judgedCount * 100
@@ -924,7 +1030,7 @@ export class BeatSurface {
     this.overlay.append(element)
 
     const milestone = text === 'FULL COMBO!'
-    const seed = this.noteIndex * 977 + this.combo * 131 + text.length * 53
+    const seed = this.judgementIndex * 977 + this.combo * 131 + text.length * 53
     const fullCircle = text === 'MISS'
     const angle = fullCircle
       ? hashUnit(seed, 5) * Math.PI * 2
@@ -1223,6 +1329,7 @@ export class BeatSurface {
     this.judgedCount = 0
     this.accuracyPoints = 0
     this.noteIndex = 0
+    this.judgementIndex = 0
     this.judgementLine.hidden = true
     this.comboLabel.hidden = true
     this.scoreLabel.hidden = true
