@@ -9,10 +9,11 @@ them over a loopback-only SSE endpoint. DSH Web mirrors active conversation
 text in a pointer-transparent per-grapheme beat layer. Deep Diving is a
 downbeat lane driven by bass/onset, while the latest reasoning, tool or
 context-injection row is an independent flow lane driven by mid/treble change.
-Streaming summaries continuously join the measured flow scan at its current
+Streaming summaries continuously join the measured flow chart at its current
 phase; they never restart it, and clipped text never enters the lane. Deep
-Diving retains about 60 downbeat combinations. The activity flow uses a single
-music-timed score instead of canned whole-row choreography.
+Diving retains about 60 downbeat combinations. Activity rows restore more than
+200 left/right, up/down, center-out, edges-in, split/converge and attack-style
+combinations, with propagation timing taken from the measured BPM.
 
 The judgement lane stays hidden until two reliable flow intervals establish a
 measured period; there is no hard-coded bootstrap tempo. A glyph then launches
@@ -23,9 +24,10 @@ out-of-window detections silently re-anchor the grid, while melodic fallback
 pulses can settle a nearby note as a reduced-confidence GOOD. The note lane and
 the row wave share one clock while Deep Diving stays on the bass/onset clock.
 Hits build Combo and a seven-digit score with local point
-bursts plus accuracy. Flow advances from the row tail one glyph at a time at
-`clamp(period / glyphCount, 18ms, 60ms)`. Medium pulses light and lift each
-glyph in sequence; high-confidence pulses hit the whole row together, while
+bursts plus accuracy. Flow chart propagation uses
+`clamp(period / glyphCount, 18ms, 60ms)` per glyph. Medium pulses run the
+selected spatial chart; high-confidence pulses hit the whole row together
+using its selected motion, while
 weak or fallback pulses retain the scan with a small 5–8px glyph bounce.
 Independent
 grade words burst from the judgement point, hit rings expand on successful

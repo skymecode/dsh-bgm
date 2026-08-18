@@ -1428,18 +1428,26 @@ export class BeatSurface {
     }
   }
 
-  /** Flow is a measured right-to-left score scan, never a canned whole-row wave. */
+  /** Flow restores arcade chart modes while every propagation step stays BPM-locked. */
   private animateFlowScan(surface: Surface, cue: WaveCue, now: number): void {
     const periodMs = cue.periodMs
     if (periodMs === undefined || surface.glyphs.length === 0) return
-    const glyphs = [...surface.glyphs].sort((left, right) =>
-      right.centerX - left.centerX || right.centerY - left.centerY)
+    const glyphs = surface.glyphs
     const stepMs = clamp(periodMs / glyphs.length, 18, 60)
     const elapsed = Math.max(0, now - cue.startedAt)
     const strong = cue.sampleKind === 'detected' && cue.strength === 'strong'
     const weak = cue.sampleKind === 'fallback' || cue.strength === 'weak'
-    if (!strong) this.showFlowRipple(surface, cue, now, stepMs)
+    const directionalRipple = cue.style.order === 'left-right' || cue.style.order === 'right-left'
+    if (weak && directionalRipple) this.showFlowRipple(surface, cue, now, stepMs)
     if (strong && elapsed < 50) this.strikeJudgementLine(cue.confidence)
+
+    let minX = Number.POSITIVE_INFINITY
+    let maxX = Number.NEGATIVE_INFINITY
+    for (const glyph of glyphs) {
+      minX = Math.min(minX, glyph.centerX)
+      maxX = Math.max(maxX, glyph.centerX)
+    }
+    const xSpan = Math.max(1, maxX - minX)
 
     const comboMultiplier = cue.comboBoost ? 1.1 : 1
     const lift = (strong
@@ -1460,20 +1468,106 @@ export class BeatSurface {
     for (let index = 0; index < glyphs.length; index += 1) {
       const glyph = glyphs[index]
       if (glyph === undefined) continue
+      const horizontal = (glyph.centerX - minX) / xSpan
+      const signedCenter = horizontal * 2 - 1
+      const centerDistance = Math.min(1, Math.abs(signedCenter))
+      let progress: number
+      switch (cue.style.order) {
+        case 'together': progress = 0; break
+        case 'left-right': progress = horizontal; break
+        case 'right-left': progress = 1 - horizontal; break
+        case 'center-out': progress = centerDistance; break
+        case 'edges-in': progress = 1 - centerDistance; break
+        case 'even-odd': progress = (index % 2) * 0.58 + horizontal * 0.42; break
+        case 'odd-even': progress = ((index + 1) % 2) * 0.58 + horizontal * 0.42; break
+        case 'shuffle': progress = hashUnit(cue.seed, index + 17); break
+      }
+
+      const direction = Math.sign(signedCenter) || (index % 2 === 0 ? -1 : 1)
+      const lateral = clamp(3 + lift * 0.32, 4, 11)
+      let peakX = 0
+      let peakY = -lift
+      switch (cue.style.motion) {
+        case 'punch':
+          peakY = -lift * 0.42
+          break
+        case 'jump':
+          peakY = -lift
+          break
+        case 'drop':
+          peakY = lift * 0.78
+          break
+        case 'split':
+          peakX = direction * lateral
+          peakY = -lift * 0.46
+          break
+        case 'converge':
+          peakX = -direction * lateral
+          peakY = -lift * 0.42
+          break
+        case 'zigzag':
+          peakY = index % 2 === 0 ? -lift : lift * 0.72
+          break
+        case 'snake':
+          peakX = Math.cos(horizontal * Math.PI * 2) * lateral * 0.42
+          peakY = Math.sin(horizontal * Math.PI * 2.5) * lift * 0.9
+          break
+        case 'stair-up':
+          peakX = lateral * 0.18
+          peakY = -lift * (0.34 + horizontal * 0.66)
+          break
+        case 'stair-down':
+          peakX = -lateral * 0.16
+          peakY = lift * (0.24 + horizontal * 0.58)
+          break
+        case 'fan':
+          peakX = signedCenter * lateral
+          peakY = -lift * (1 - Math.abs(signedCenter) * 0.35)
+          break
+        case 'orbit': {
+          const angle = horizontal * Math.PI * 2 + hashUnit(cue.seed, 91) * Math.PI
+          peakX = Math.cos(angle) * lateral * 0.72
+          peakY = Math.sin(angle) * lift * 0.82
+          break
+        }
+      }
+
       for (const animation of glyph.element.getAnimations()) animation.cancel()
       glyph.element.style.webkitTextStroke = cue.goldAccent ? '0.35px #ffd76a' : ''
-      const delay = (strong ? 0 : index * stepMs) - elapsed
+      const travelMs = stepMs * Math.max(0, glyphs.length - 1)
+      const delay = (strong ? 0 : progress * travelMs) - elapsed
       if (delay + durationMs <= 0) continue
-      const press = 'translate3d(0, 1px, 0) scaleX(1.025) scaleY(.92)'
-      const peak = `translate3d(0, ${(-lift).toFixed(2)}px, 0) scale(${peakScale.toFixed(3)})`
-      const rebound = `translate3d(0, ${(lift * 0.12).toFixed(2)}px, 0) scaleX(1.03) scaleY(.97)`
-      glyph.element.animate([
-        { transform: rest, textShadow: '0 0 0 transparent' },
-        { transform: press, textShadow: '0 0 0 transparent', offset: 0.045 },
-        { transform: peak, textShadow: peakShadow, offset: 0.3 },
-        { transform: rebound, textShadow: '0 0 0 transparent', offset: 0.64 },
-        { transform: rest, textShadow: '0 0 0 transparent' },
-      ], {
+      const press = `translate3d(${(-peakX * 0.12).toFixed(2)}px, ${(peakY > 0 ? -1 : 1).toFixed(2)}px, 0) scaleX(1.025) scaleY(.92)`
+      const peak = `translate3d(${peakX.toFixed(2)}px, ${peakY.toFixed(2)}px, 0) scale(${peakScale.toFixed(3)})`
+      const rebound = `translate3d(${(-peakX * 0.14).toFixed(2)}px, ${(-peakY * 0.12).toFixed(2)}px, 0) scaleX(1.03) scaleY(.97)`
+      const halfPeak = `translate3d(${(peakX * 0.36).toFixed(2)}px, ${(peakY * 0.36).toFixed(2)}px, 0) scale(${(1 + (peakScale - 1) * 0.38).toFixed(3)})`
+      const restShadow = '0 0 0 transparent'
+      const frames: Keyframe[] = cue.style.attack === 'bounce'
+        ? [
+            { transform: rest, textShadow: restShadow },
+            { transform: press, textShadow: restShadow, offset: 0.045 },
+            { transform: peak, textShadow: peakShadow, offset: 0.28 },
+            { transform: rebound, textShadow: restShadow, offset: 0.56 },
+            { transform: halfPeak, textShadow: peakShadow, offset: 0.78 },
+            { transform: rest, textShadow: restShadow },
+          ]
+        : cue.style.attack === 'hold'
+          ? [
+              { transform: rest, textShadow: restShadow },
+              { transform: press, textShadow: restShadow, offset: 0.045 },
+              { transform: peak, textShadow: peakShadow, offset: 0.27 },
+              { transform: peak, textShadow: peakShadow, offset: 0.56 },
+              { transform: rebound, textShadow: restShadow, offset: 0.8 },
+              { transform: rest, textShadow: restShadow },
+            ]
+          : [
+              { transform: rest, textShadow: restShadow },
+              { transform: press, textShadow: restShadow, offset: 0.045 },
+              { transform: peak, textShadow: peakShadow, offset: 0.3 },
+              { transform: rebound, textShadow: restShadow, offset: 0.64 },
+              { transform: rest, textShadow: restShadow },
+            ]
+      glyph.element.animate(frames, {
         duration: durationMs,
         delay,
         easing: 'cubic-bezier(.12,.8,.22,1)',
@@ -1491,31 +1585,33 @@ export class BeatSurface {
     const elapsed = Math.max(0, now - cue.startedAt)
     if (elapsed >= totalMs) return
     const progress = clamp(elapsed / totalMs, 0, 1)
+    const leftToRight = cue.style.order === 'left-right'
+    const direction = leftToRight ? 1 : -1
     const peakOpacity = cue.strength === 'medium' ? 0.2 : 0.11
     const startOpacity = progress < 0.08
       ? peakOpacity * progress / 0.08
       : peakOpacity * (1 - progress) / 0.92
     const ripple = document.createElement('span')
     ripple.className = 'dsh-bgm-flow-ripple'
-    ripple.style.left = `${rect.right - 6}px`
+    ripple.style.left = `${leftToRight ? rect.left - 6 : rect.right - 6}px`
     ripple.style.top = `${rect.top}px`
     ripple.style.height = `${rect.height}px`
     ripple.style.color = cue.goldAccent ? '#ffd76a' : '#8fd7ff'
     this.overlay.append(ripple)
     const frames: Keyframe[] = [{
       opacity: Math.max(0, startOpacity),
-      transform: `translate3d(${(-rect.width * progress).toFixed(2)}px, 0, 0)`,
+      transform: `translate3d(${(direction * rect.width * progress).toFixed(2)}px, 0, 0)`,
     }]
     if (progress < 0.08) {
       frames.push({
         opacity: peakOpacity,
-        transform: `translate3d(${(-rect.width * 0.08).toFixed(2)}px, 0, 0)`,
+        transform: `translate3d(${(direction * rect.width * 0.08).toFixed(2)}px, 0, 0)`,
         offset: (0.08 - progress) / (1 - progress),
       })
     }
     frames.push({
       opacity: 0,
-      transform: `translate3d(${(-rect.width - 12).toFixed(2)}px, 0, 0)`,
+      transform: `translate3d(${(direction * (rect.width + 12)).toFixed(2)}px, 0, 0)`,
     })
     const animation = ripple.animate(frames, { duration: totalMs - elapsed, easing: 'linear' })
     animation.onfinish = () => ripple.remove()
