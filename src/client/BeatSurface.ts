@@ -2,7 +2,20 @@ import type { BgmSnapshot, RhythmFrame } from '../core/types.ts'
 import { subscribeBgm } from './stream.ts'
 
 type SurfaceKind = 'reasoning' | 'tool' | 'context' | 'deep-diving'
-type WavePattern = 'left-right' | 'inside-out' | 'outside-in' | 'top-down'
+type WavePattern = 'left-right' | 'right-left' | 'inside-out' | 'outside-in'
+  | 'up-wave' | 'down-wave' | 'zigzag' | 'snake' | 'split'
+
+const WAVE_PATTERNS: readonly WavePattern[] = [
+  'left-right',
+  'right-left',
+  'inside-out',
+  'outside-in',
+  'up-wave',
+  'down-wave',
+  'zigzag',
+  'snake',
+  'split',
+]
 
 interface Glyph {
   readonly element: HTMLSpanElement
@@ -15,7 +28,6 @@ interface Surface {
   readonly kind: SurfaceKind
   readonly glyphs: Glyph[]
   readonly masked: Set<HTMLElement>
-  readonly sourceNodes: readonly Text[]
   readonly signature: string
 }
 
@@ -32,7 +44,8 @@ interface TextRun {
 
 const SOUND_THRESHOLD = 0.025
 const SILENCE_HOLD_MS = 700
-const MAX_GLYPHS_PER_SURFACE = 48
+const MAX_GLYPHS_PER_SURFACE = 96
+const MAX_SEGMENTS_PER_RUN = 180
 const EXCLUDED_TEXT = 'script, style, textarea, input, pre, code, svg, canvas, math, .katex, [aria-hidden="true"]'
 const ACTIVITY_MARKER = [
   '[data-variant="think"][data-state="running"]',
@@ -60,20 +73,69 @@ function isVisuallyPainted(parent: HTMLElement): boolean {
   return !clipped && !tinyOverflowBox
 }
 
-/** Return only the stable row label; streaming summaries are deliberately excluded. */
+/** Collect the one-line label and summary, bounding long scrolling runs. */
 function textRuns(target: HTMLElement): readonly TextRun[] {
   const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT)
+  const runs: TextRun[] = []
   let current: Node | null
   while ((current = walker.nextNode()) !== null) {
     const node = current as Text
     const parent = node.parentElement
     if (parent === null || parent.closest(EXCLUDED_TEXT) !== null || !isVisuallyPainted(parent)) continue
     if (node.data.trim() === '') continue
-    const segments = [...segmenter.segment(node.data)].slice(0, MAX_GLYPHS_PER_SURFACE)
+    const allSegments = [...segmenter.segment(node.data)]
+    const segments = parent.hasAttribute('data-follow-end')
+      ? allSegments.slice(-MAX_SEGMENTS_PER_RUN)
+      : allSegments.slice(0, MAX_SEGMENTS_PER_RUN)
     if (segments.length === 0) continue
-    return [{ node, parent, segments }]
+    runs.push({ node, parent, segments })
   }
-  return []
+  return runs
+}
+
+interface ClipBounds {
+  left: number
+  right: number
+  top: number
+  bottom: number
+}
+
+/** Intersect every overflow clip between a text run and its disclosure row. */
+function clipBounds(parent: HTMLElement, target: HTMLElement, targetRect: DOMRect): ClipBounds {
+  const bounds: ClipBounds = {
+    left: targetRect.left,
+    right: targetRect.right,
+    top: targetRect.top,
+    bottom: targetRect.bottom,
+  }
+  let current: HTMLElement | null = parent
+  while (current !== null && target.contains(current)) {
+    const computed = getComputedStyle(current)
+    const clipsX = computed.overflowX === 'hidden' || computed.overflowX === 'clip'
+      || computed.overflowX === 'auto' || computed.overflowX === 'scroll'
+    const clipsY = computed.overflowY === 'hidden' || computed.overflowY === 'clip'
+      || computed.overflowY === 'auto' || computed.overflowY === 'scroll'
+    if (clipsX || clipsY) {
+      const rect = current.getBoundingClientRect()
+      if (clipsX) {
+        bounds.left = Math.max(bounds.left, rect.left)
+        bounds.right = Math.min(bounds.right, rect.right)
+      }
+      if (clipsY) {
+        bounds.top = Math.max(bounds.top, rect.top)
+        bounds.bottom = Math.min(bounds.bottom, rect.bottom)
+      }
+    }
+    if (current === target) break
+    current = current.parentElement
+  }
+  return bounds
+}
+
+function runSignature(run: TextRun): string {
+  const followsEnd = run.parent.hasAttribute('data-follow-end')
+  const visibleText = followsEnd ? run.node.data.slice(-360) : run.node.data.slice(0, 360)
+  return `${run.node.data.length}:${visibleText}:${Math.round(run.parent.scrollLeft)}`
 }
 
 function isTransparentColor(color: string): boolean {
@@ -246,23 +308,12 @@ export class BeatSurface {
     this.observer = new MutationObserver((records) => {
       for (const record of records) {
         if (this.overlay.contains(record.target)) continue
-        const touchesSurface = [...this.surfaces.values()].some(surface => (
-          (record.type === 'characterData' && surface.sourceNodes.includes(record.target as Text))
-          || (record.type === 'childList' && (
-            (record.target instanceof HTMLElement && surface.masked.has(record.target))
-            || [...record.removedNodes].some(node => (
-              node === surface.target
-              || (node instanceof Element && node.contains(surface.target))
-              || surface.sourceNodes.some(source => node === source || (node instanceof Element && node.contains(source)))
-            ))
-          ))
-        ))
         const changesActivityTree = record.type === 'attributes'
           || (record.type === 'childList' && (
             [...record.addedNodes].some(nodeHasActivity)
             || [...record.removedNodes].some(nodeHasActivity)
           ))
-        if (touchesSurface || changesActivityTree) {
+        if (changesActivityTree) {
           this.scheduleRefresh()
           return
         }
@@ -275,7 +326,6 @@ export class BeatSurface {
     this.observer.observe(document.body, {
       subtree: true,
       childList: true,
-      characterData: true,
       attributes: true,
       attributeFilter: ['data-state', 'data-chat-flow-kind'],
     })
@@ -314,7 +364,14 @@ export class BeatSurface {
         this.deactivate()
       }, SILENCE_HOLD_MS)
     }
-    if (this.active && this.beatDetector.sample(frame, performance.now())) this.hit(frame)
+    if (this.active && this.beatDetector.sample(frame, performance.now())) {
+      if (this.refreshFrame !== undefined) cancelAnimationFrame(this.refreshFrame)
+      this.refreshFrame = undefined
+      // The current visible summary is admitted on the Hit, like notes crossing
+      // a judgement line. Token mutations between Hits never rebuild the lane.
+      this.refresh()
+      this.hit(frame)
+    }
   }
 
   private refresh(): void {
@@ -335,7 +392,7 @@ export class BeatSurface {
     const runs = textRuns(candidate.target)
     const signature = [
       candidate.kind,
-      ...runs.map(run => run.node.data),
+      ...runs.map(runSignature),
       Math.round(rect.left), Math.round(rect.top), Math.round(rect.width), Math.round(rect.height),
     ].join('\u0000')
     const previous = this.surfaces.get(candidate.target)
@@ -345,17 +402,22 @@ export class BeatSurface {
     const glyphs: Glyph[] = []
     const masked = new Set<HTMLElement>()
     const range = document.createRange()
+    let paintedCount = 0
     for (const run of runs) {
       const computed = getComputedStyle(run.parent)
+      const clip = clipBounds(run.parent, candidate.target, rect)
       let paintedRun = false
       for (const segment of run.segments) {
+        if (paintedCount >= MAX_GLYPHS_PER_SURFACE) break
         if (segment.segment.trim() === '') continue
         range.setStart(run.node, segment.index)
         range.setEnd(run.node, segment.index + segment.segment.length)
         const glyphRect = range.getBoundingClientRect()
-        const insideRow = glyphRect.right >= rect.left && glyphRect.left <= rect.right
-          && glyphRect.bottom >= rect.top && glyphRect.top <= rect.bottom
-        if (!isVisible(glyphRect) || !insideRow) continue
+        const centerX = glyphRect.left + glyphRect.width / 2
+        const centerY = glyphRect.top + glyphRect.height / 2
+        const insideClip = centerX >= clip.left && centerX <= clip.right
+          && centerY >= clip.top && centerY <= clip.bottom
+        if (!isVisible(glyphRect) || !insideClip) continue
         const element = document.createElement('span')
         element.className = 'dsh-bgm-glyph'
         element.textContent = segment.segment
@@ -363,9 +425,10 @@ export class BeatSurface {
         this.overlay.append(element)
         glyphs.push({
           element,
-          centerX: glyphRect.left + glyphRect.width / 2,
-          centerY: glyphRect.top + glyphRect.height / 2,
+          centerX,
+          centerY,
         })
+        paintedCount += 1
         paintedRun = true
       }
       if (paintedRun) masked.add(run.parent)
@@ -378,7 +441,6 @@ export class BeatSurface {
       kind: candidate.kind,
       glyphs,
       masked,
-      sourceNodes: runs.map(run => run.node),
       signature,
     })
     candidate.target.dataset.dshBgmReactive = candidate.kind
@@ -393,14 +455,21 @@ export class BeatSurface {
 
   private wavePattern(frame: RhythmFrame): WavePattern {
     if (this.phraseHitsRemaining <= 0) {
-      if (frame.onset > 0.62) this.phrasePattern = 'top-down'
-      else if (frame.bass > frame.mid + 0.08 && frame.bass > frame.treble + 0.08) this.phrasePattern = 'inside-out'
-      else if (frame.treble > frame.mid + 0.08 && frame.treble > frame.bass + 0.08) this.phrasePattern = 'outside-in'
-      else {
-        const phrases = ['left-right', 'inside-out', 'outside-in', 'top-down'] as const
-        this.phrasePattern = phrases[Math.floor(this.hitIndex / 4) % phrases.length] ?? 'left-right'
+      // Audio-seeded shuffle: varied like a rhythm-game chart, but never picks
+      // the same movement twice in succession.
+      const audioSeed = Math.abs(Math.floor(
+        frame.capturedAt
+        + frame.bass * 997
+        + frame.mid * 619
+        + frame.treble * 389
+        + this.hitIndex * 131,
+      ))
+      let next = WAVE_PATTERNS[audioSeed % WAVE_PATTERNS.length] ?? 'left-right'
+      if (next === this.phrasePattern) {
+        next = WAVE_PATTERNS[(audioSeed + 1 + this.hitIndex) % WAVE_PATTERNS.length] ?? 'right-left'
       }
-      this.phraseHitsRemaining = 4
+      this.phrasePattern = next
+      this.phraseHitsRemaining = frame.onset > 0.45 ? 1 : 2
     }
     this.phraseHitsRemaining -= 1
     return this.phrasePattern
@@ -423,30 +492,77 @@ export class BeatSurface {
     const centerY = (minY + maxY) / 2
     const maxDistance = Math.max(1, Math.hypot(maxX - minX, maxY - minY) / 2)
     const xSpan = Math.max(1, maxX - minX)
-    const ySpan = Math.max(1, maxY - minY)
-    const effectivePattern = pattern === 'top-down' && ySpan < 4 ? 'left-right' : pattern
-    const travelMs = 150 + energy * 120
-    const lift = 4.5 + energy * 5.5
+    const travelMs = 180 + energy * 100
+    const lift = 5 + energy * 5
 
-    for (const glyph of glyphs) {
+    for (let index = 0; index < glyphs.length; index += 1) {
+      const glyph = glyphs[index]
+      if (glyph === undefined) continue
       const distance = Math.min(1, Math.hypot(glyph.centerX - centerX, glyph.centerY - centerY) / maxDistance)
-      const progress = effectivePattern === 'left-right'
-        ? (glyph.centerX - minX) / xSpan
-        : effectivePattern === 'top-down'
-          ? (glyph.centerY - minY) / ySpan
-          : effectivePattern === 'inside-out'
-            ? distance
-            : 1 - distance
+      const horizontal = (glyph.centerX - minX) / xSpan
+      const signedCenter = horizontal * 2 - 1
+      let progress = horizontal
+      let peakX = 0
+      let peakY = -lift
+      switch (pattern) {
+        case 'right-left':
+          progress = 1 - horizontal
+          peakX = -2.4
+          break
+        case 'inside-out':
+          progress = distance
+          peakX = Math.sign(signedCenter) * (2.5 + energy * 2)
+          peakY = -lift * 0.78
+          break
+        case 'outside-in':
+          progress = 1 - distance
+          peakX = -Math.sign(signedCenter) * (2.5 + energy * 2)
+          peakY = -lift * 0.72
+          break
+        case 'up-wave':
+          progress = horizontal
+          peakY = -lift
+          break
+        case 'down-wave':
+          progress = 1 - horizontal
+          peakY = lift * 0.78
+          break
+        case 'zigzag':
+          progress = horizontal
+          peakY = index % 2 === 0 ? -lift : lift * 0.7
+          break
+        case 'snake':
+          progress = horizontal
+          peakY = Math.sin(horizontal * Math.PI * 2.5) * lift * 0.9
+          peakX = Math.cos(horizontal * Math.PI * 2) * 1.8
+          break
+        case 'split':
+          progress = distance
+          peakX = Math.sign(signedCenter) * (3.5 + energy * 2.5)
+          peakY = -lift * 0.55
+          break
+        case 'left-right':
+          peakX = 2.4
+          break
+      }
       for (const animation of glyph.element.getAnimations()) animation.cancel()
       glyph.element.animate([
         { transform: 'translate3d(0, 0, 0) scale(1)' },
         {
-          transform: `translate3d(0, ${(-lift).toFixed(2)}px, 0) scale(${(1.06 + energy * 0.06).toFixed(3)})`,
-          offset: 0.42,
+          transform: `translate3d(${(-peakX * 0.2).toFixed(2)}px, ${(peakY > 0 ? -1.2 : 1.5).toFixed(2)}px, 0) scaleX(1.045) scaleY(.9)`,
+          offset: 0.18,
+        },
+        {
+          transform: `translate3d(${peakX.toFixed(2)}px, ${peakY.toFixed(2)}px, 0) scale(${(1.08 + energy * 0.06).toFixed(3)})`,
+          offset: 0.46,
+        },
+        {
+          transform: `translate3d(${(-peakX * 0.12).toFixed(2)}px, ${(-peakY * 0.1).toFixed(2)}px, 0) scaleX(1.02) scaleY(.97)`,
+          offset: 0.78,
         },
         { transform: 'translate3d(0, 0, 0) scale(1)' },
       ], {
-        duration: 260 + energy * 80,
+        duration: 310 + energy * 80,
         delay: progress * travelMs,
         easing: 'cubic-bezier(.18,.82,.28,1)',
       })

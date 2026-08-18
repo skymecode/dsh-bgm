@@ -6,11 +6,12 @@ The plugin captures the default system output independently of the player, so
 QQ Music, NetEase Cloud Music, browser playback and other apps use the same
 path. The Host reduces raw PCM to RMS/bass/mid/treble/onset frames and publishes
 them over a loopback-only SSE endpoint. DSH Web mirrors active conversation
-text in a pointer-transparent per-grapheme beat layer. Only Deep Diving and
-the stable label of the latest active reasoning, tool or context-injection row
-moves; continuously changing row summaries are deliberately excluded. Labels
-follow stable four-hit spatial phrases: left-to-right, inside-out, outside-in
-or top-down.
+text in a pointer-transparent per-grapheme beat layer. Deep Diving and the
+latest active reasoning, tool or context-injection row form one glyph lane.
+Streaming summaries admit a new visible snapshot only on a detected Hit, and
+clipped text never enters the lane. Each glyph compresses, rebounds and lands
+in an audio-seeded, non-repeating chart: left-to-right, right-to-left,
+inside-out, outside-in, up, down, alternating, snake or split.
 Final answers, the page background and brightness remain unchanged.
 Each hit is a discrete wave rather than continuous line jitter. Screen-reader
 only labels remain accessible and are excluded from the visual mirror. Raw
