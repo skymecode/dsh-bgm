@@ -27,6 +27,14 @@ html[data-dsh-bgm-active] [data-dsh-bgm-masked] {
   text-shadow: none !important;
 }
 
+/* DSH paints Deep Diving with a gradient clipped into transparent text. The
+   gradient must be disabled as well as the text color or it remains as a
+   second, shimmering copy underneath the beat glyphs. */
+html[data-dsh-bgm-active] [data-dsh-bgm-reactive='deep-diving'][data-dsh-bgm-masked] {
+  background-image: none !important;
+  animation: none !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .dsh-bgm-glyph { transform: none !important; }
 }

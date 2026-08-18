@@ -7,8 +7,10 @@ QQ Music, NetEase Cloud Music, browser playback and other apps use the same
 path. The Host reduces raw PCM to RMS/bass/mid/treble/onset frames and publishes
 them over a loopback-only SSE endpoint. DSH Web mirrors active conversation
 text in a pointer-transparent per-grapheme beat layer. Only Deep Diving and
-the latest active reasoning, tool or context-injection row move in stable
-four-hit spatial phrases: left-to-right, inside-out, outside-in or top-down.
+the stable label of the latest active reasoning, tool or context-injection row
+moves; continuously changing row summaries are deliberately excluded. Labels
+follow stable four-hit spatial phrases: left-to-right, inside-out, outside-in
+or top-down.
 Final answers, the page background and brightness remain unchanged.
 Each hit is a discrete wave rather than continuous line jitter. Screen-reader
 only labels remain accessible and are excluded from the visual mirror. Raw

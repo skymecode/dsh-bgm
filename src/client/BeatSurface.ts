@@ -15,6 +15,7 @@ interface Surface {
   readonly kind: SurfaceKind
   readonly glyphs: Glyph[]
   readonly masked: Set<HTMLElement>
+  readonly sourceNodes: readonly Text[]
   readonly signature: string
 }
 
@@ -31,7 +32,7 @@ interface TextRun {
 
 const SOUND_THRESHOLD = 0.025
 const SILENCE_HOLD_MS = 700
-const MAX_GLYPHS_PER_SURFACE = 140
+const MAX_GLYPHS_PER_SURFACE = 48
 const EXCLUDED_TEXT = 'script, style, textarea, input, pre, code, svg, canvas, math, .katex, [aria-hidden="true"]'
 const ACTIVITY_MARKER = [
   '[data-variant="think"][data-state="running"]',
@@ -59,23 +60,20 @@ function isVisuallyPainted(parent: HTMLElement): boolean {
   return !clipped && !tinyOverflowBox
 }
 
+/** Return only the stable row label; streaming summaries are deliberately excluded. */
 function textRuns(target: HTMLElement): readonly TextRun[] {
   const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT)
-  const runs: TextRun[] = []
-  let count = 0
   let current: Node | null
-  while ((current = walker.nextNode()) !== null && count < MAX_GLYPHS_PER_SURFACE) {
+  while ((current = walker.nextNode()) !== null) {
     const node = current as Text
     const parent = node.parentElement
     if (parent === null || parent.closest(EXCLUDED_TEXT) !== null || !isVisuallyPainted(parent)) continue
     if (node.data.trim() === '') continue
-    const remaining = MAX_GLYPHS_PER_SURFACE - count
-    const segments = [...segmenter.segment(node.data)].slice(0, remaining)
+    const segments = [...segmenter.segment(node.data)].slice(0, MAX_GLYPHS_PER_SURFACE)
     if (segments.length === 0) continue
-    runs.push({ node, parent, segments })
-    count += segments.length
+    return [{ node, parent, segments }]
   }
-  return runs
+  return []
 }
 
 function isTransparentColor(color: string): boolean {
@@ -249,10 +247,15 @@ export class BeatSurface {
       for (const record of records) {
         if (this.overlay.contains(record.target)) continue
         const touchesSurface = [...this.surfaces.values()].some(surface => (
-          surface.target.contains(record.target)
-          || (record.type === 'childList' && [...record.removedNodes].some(node => (
-            node === surface.target || (node instanceof Element && node.contains(surface.target))
-          )))
+          (record.type === 'characterData' && surface.sourceNodes.includes(record.target as Text))
+          || (record.type === 'childList' && (
+            (record.target instanceof HTMLElement && surface.masked.has(record.target))
+            || [...record.removedNodes].some(node => (
+              node === surface.target
+              || (node instanceof Element && node.contains(surface.target))
+              || surface.sourceNodes.some(source => node === source || (node instanceof Element && node.contains(source)))
+            ))
+          ))
         ))
         const changesActivityTree = record.type === 'attributes'
           || (record.type === 'childList' && (
@@ -329,9 +332,10 @@ export class BeatSurface {
 
   private rebuild(candidate: Candidate): void {
     const rect = candidate.target.getBoundingClientRect()
+    const runs = textRuns(candidate.target)
     const signature = [
       candidate.kind,
-      candidate.target.textContent ?? '',
+      ...runs.map(run => run.node.data),
       Math.round(rect.left), Math.round(rect.top), Math.round(rect.width), Math.round(rect.height),
     ].join('\u0000')
     const previous = this.surfaces.get(candidate.target)
@@ -341,7 +345,7 @@ export class BeatSurface {
     const glyphs: Glyph[] = []
     const masked = new Set<HTMLElement>()
     const range = document.createRange()
-    for (const run of textRuns(candidate.target)) {
+    for (const run of runs) {
       const computed = getComputedStyle(run.parent)
       let paintedRun = false
       for (const segment of run.segments) {
@@ -374,6 +378,7 @@ export class BeatSurface {
       kind: candidate.kind,
       glyphs,
       masked,
+      sourceNodes: runs.map(run => run.node),
       signature,
     })
     candidate.target.dataset.dshBgmReactive = candidate.kind
@@ -419,28 +424,29 @@ export class BeatSurface {
     const maxDistance = Math.max(1, Math.hypot(maxX - minX, maxY - minY) / 2)
     const xSpan = Math.max(1, maxX - minX)
     const ySpan = Math.max(1, maxY - minY)
-    const travelMs = 120 + energy * 100
-    const lift = 2 + energy * 3
+    const effectivePattern = pattern === 'top-down' && ySpan < 4 ? 'left-right' : pattern
+    const travelMs = 150 + energy * 120
+    const lift = 4.5 + energy * 5.5
 
     for (const glyph of glyphs) {
       const distance = Math.min(1, Math.hypot(glyph.centerX - centerX, glyph.centerY - centerY) / maxDistance)
-      const progress = pattern === 'left-right'
+      const progress = effectivePattern === 'left-right'
         ? (glyph.centerX - minX) / xSpan
-        : pattern === 'top-down'
+        : effectivePattern === 'top-down'
           ? (glyph.centerY - minY) / ySpan
-          : pattern === 'inside-out'
+          : effectivePattern === 'inside-out'
             ? distance
             : 1 - distance
       for (const animation of glyph.element.getAnimations()) animation.cancel()
       glyph.element.animate([
         { transform: 'translate3d(0, 0, 0) scale(1)' },
         {
-          transform: `translate3d(0, ${(-lift).toFixed(2)}px, 0) scale(${(1.02 + energy * 0.035).toFixed(3)})`,
+          transform: `translate3d(0, ${(-lift).toFixed(2)}px, 0) scale(${(1.06 + energy * 0.06).toFixed(3)})`,
           offset: 0.42,
         },
         { transform: 'translate3d(0, 0, 0) scale(1)' },
       ], {
-        duration: 210 + energy * 70,
+        duration: 260 + energy * 80,
         delay: progress * travelMs,
         easing: 'cubic-bezier(.18,.82,.28,1)',
       })
