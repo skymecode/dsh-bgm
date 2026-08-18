@@ -1,14 +1,15 @@
 {
   "name": "dsh-bgm",
-  "version": "0.0.1",
-  "description": "Cross-platform system-audio-reactive conversation plugin for DSH Web",
+  "version": "0.1.0",
+  "description": "面向 DSH Web 的跨平台系统音频节奏与音游氛围插件",
   "type": "module",
   "packageManager": "pnpm@11.22.0",
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
   },
   "scripts": {
-    "build": "node scripts/build-native.mjs && tsc -b --clean && tsc -b --pretty false && tsdown",
+    "build": "node scripts/build-native.mjs && pnpm run build:js",
+    "build:js": "tsc -b --clean && tsc -b --pretty false && tsdown",
     "build:native": "node scripts/build-native.mjs",
     "typecheck": "tsc -b --pretty false",
     "prepare": "pnpm run build"
@@ -45,10 +46,27 @@
     "lib/**/*.d.ts.map",
     "cordis.patch.yml",
     "native",
+    "docs/dsh-bgm-banner.jpg",
     "README.md",
+    "README.en.md",
     "README.zh.md",
     "THIRD_PARTY_NOTICES.md",
     "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/skymecode/dsh-bgm.git"
+  },
+  "homepage": "https://github.com/skymecode/dsh-bgm#readme",
+  "bugs": {
+    "url": "https://github.com/skymecode/dsh-bgm/issues"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "system-audio",
+    "music-visualizer",
+    "rhythm-game"
   ],
   "license": "MIT",
   "peerDependencies": {

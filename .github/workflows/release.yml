@@ -1,0 +1,189 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify release source
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Lint GitHub Actions workflows
+        uses: docker://rhysd/actionlint:latest
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 11.22.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22.19.0
+          cache: pnpm
+
+      - name: Verify tag and package version
+        run: |
+          package_version="$(node -p "require('./package.json').version")"
+          test "$GITHUB_REF_NAME" = "v$package_version"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Typecheck and build
+        run: |
+          pnpm run typecheck
+          pnpm run build:js
+
+  native:
+    name: Build ${{ matrix.label }} helper
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - label: macOS universal
+            os: macos-15
+            platform: macos
+            artifact: native-macos
+            path: native/bin/dsh-bgm-helper-macos
+          - label: Windows x64
+            os: windows-2022
+            platform: windows
+            artifact: native-windows
+            path: native/bin/dsh-bgm-helper-windows.exe
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22.19.0
+
+      - name: Setup .NET 8
+        if: matrix.platform == 'windows'
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Build macOS helper
+        if: matrix.platform == 'macos'
+        env:
+          DSH_BGM_MACOS_UNIVERSAL: '1'
+        run: node scripts/build-native.mjs
+
+      - name: Verify macOS architectures and signature
+        if: matrix.platform == 'macos'
+        run: |
+          lipo native/bin/dsh-bgm-helper-macos -verify_arch arm64 x86_64
+          codesign --verify --strict native/bin/dsh-bgm-helper-macos
+
+      - name: Build Windows helper
+        if: matrix.platform == 'windows'
+        run: node scripts/build-native.mjs
+
+      - name: Upload native helper
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.path }}
+          if-no-files-found: error
+          retention-days: 1
+
+  package-and-release:
+    name: Assemble universal package and publish GitHub Release
+    needs:
+      - verify
+      - native
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 11.22.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22.19.0
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Build web and host bundles
+        run: pnpm run build:js
+
+      - name: Download native helpers
+        uses: actions/download-artifact@v5
+        with:
+          pattern: native-*
+          path: native/bin
+          merge-multiple: true
+
+      - name: Verify assembled platform payload
+        run: |
+          chmod 755 native/bin/dsh-bgm-helper-macos
+          test -s native/bin/dsh-bgm-helper-macos
+          test -s native/bin/dsh-bgm-helper-windows.exe
+          file native/bin/dsh-bgm-helper-macos native/bin/dsh-bgm-helper-windows.exe
+
+      - name: Pack stable release asset
+        run: |
+          mkdir -p dist
+          pnpm pack --pack-destination dist
+          mv dist/dsh-bgm-*.tgz dist/dsh-bgm.tgz
+          tar -tzf dist/dsh-bgm.tgz | tee "$RUNNER_TEMP/package-files.txt"
+          grep -F 'package/lib/index.js' "$RUNNER_TEMP/package-files.txt"
+          grep -F 'package/lib/client.js' "$RUNNER_TEMP/package-files.txt"
+          grep -F 'package/native/bin/dsh-bgm-helper-macos' "$RUNNER_TEMP/package-files.txt"
+          grep -F 'package/native/bin/dsh-bgm-helper-windows.exe' "$RUNNER_TEMP/package-files.txt"
+          (cd dist && sha256sum dsh-bgm.tgz > SHA256SUMS.txt)
+
+      - name: Install pinned official DSH CLI
+        run: npm install --global @deepseek-ai/dsh@0.1.0-rc.7
+
+      - name: Verify clean official DSH Web profile install
+        env:
+          DSH_HOME: ${{ runner.temp }}/release-dsh-home
+          DSH_TELEMETRY_DISABLED: '1'
+        run: |
+          dsh plugin --profile web add "$PWD/dist/dsh-bgm.tgz"
+          dsh web --dump-config > "$RUNNER_TEMP/dsh-web-config.yml"
+          grep -F '# == dsh-bgm' "$RUNNER_TEMP/dsh-web-config.yml"
+          grep -F 'name: dsh-bgm' "$RUNNER_TEMP/dsh-web-config.yml"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/dsh-bgm.tgz \
+            dist/SHA256SUMS.txt \
+            --generate-notes \
+            --title "dsh-bgm $GITHUB_REF_NAME"

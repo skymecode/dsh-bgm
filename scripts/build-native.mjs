@@ -1,4 +1,4 @@
-import { chmodSync, copyFileSync, mkdirSync, readdirSync } from 'node:fs'
+import { chmodSync, copyFileSync, mkdirSync, readdirSync, rmSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -19,18 +19,34 @@ if (process.platform === 'darwin') {
     .map(name => join(sourceDir, name))
   const output = join(binDir, 'dsh-bgm-helper-macos')
   const infoPlist = join(root, 'native', 'macos', 'Info.plist')
-  run('swiftc', [
+  const compile = (target, destination) => run('swiftc', [
     '-O',
     '-parse-as-library',
+    ...(target === undefined ? [] : ['-target', target]),
     '-framework', 'CoreAudio',
     '-framework', 'AudioToolbox',
     '-Xlinker', '-sectcreate',
     '-Xlinker', '__TEXT',
     '-Xlinker', '__info_plist',
     '-Xlinker', infoPlist,
-    '-o', output,
+    '-o', destination,
     ...sources,
   ])
+
+  if (process.env.DSH_BGM_MACOS_UNIVERSAL === '1') {
+    const arm64 = `${output}.arm64`
+    const x64 = `${output}.x86_64`
+    try {
+      compile('arm64-apple-macosx14.2', arm64)
+      compile('x86_64-apple-macosx14.2', x64)
+      run('lipo', ['-create', arm64, x64, '-output', output])
+    } finally {
+      rmSync(arm64, { force: true })
+      rmSync(x64, { force: true })
+    }
+  } else {
+    compile(undefined, output)
+  }
   run('codesign', ['--force', '--sign', '-', '--identifier', 'com.dsh.bgm.helper', output])
   chmodSync(output, 0o755)
   console.log(`built ${output}`)
