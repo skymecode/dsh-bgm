@@ -173,6 +173,24 @@ const stylesheet = `
   will-change: transform, opacity;
 }
 
+.dsh-bgm-center-ray {
+  position: fixed;
+  z-index: 2147483003;
+  height: 2px;
+  pointer-events: none;
+  border-radius: 999px;
+  color: #8fd7ff;
+  background: linear-gradient(90deg, currentColor, transparent);
+  box-shadow: 0 0 5px currentColor;
+  transform-origin: 0 50%;
+  will-change: transform, opacity;
+}
+
+.dsh-bgm-center-ray--left {
+  background: linear-gradient(90deg, transparent, currentColor);
+  transform-origin: 100% 50%;
+}
+
 .dsh-bgm-flow-breath {
   position: fixed;
   z-index: 2147483001;
@@ -184,6 +202,105 @@ const stylesheet = `
   transform-origin: 50% 50%;
   transition: opacity 65ms linear, transform 65ms linear;
   will-change: transform, opacity;
+}
+
+.dsh-bgm-result-card {
+  position: fixed;
+  z-index: 2147483005;
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 10px 14px;
+  box-sizing: border-box;
+  padding: 14px 16px 12px;
+  pointer-events: none;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--dsh-bgm-result-color) 48%, transparent);
+  border-radius: 14px;
+  color: var(--dsw-label-primary, #eef6ff);
+  background: color-mix(in srgb, var(--dsw-base-background, #101722) 88%, transparent);
+  box-shadow:
+    0 12px 32px rgba(0, 0, 0, .34),
+    0 0 18px color-mix(in srgb, var(--dsh-bgm-result-color) 22%, transparent);
+  backdrop-filter: blur(12px);
+  font-family: var(--ds-font-family, system-ui, sans-serif);
+  will-change: transform, opacity;
+}
+
+.dsh-bgm-result-card::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--dsh-bgm-result-color), transparent);
+  opacity: .86;
+}
+
+.dsh-bgm-result-rank {
+  align-self: center;
+  color: var(--dsh-bgm-result-color);
+  font: 800 64px/.86 var(--ds-font-family, system-ui, sans-serif);
+  text-align: center;
+  text-shadow: 0 0 8px currentColor, 0 0 20px color-mix(in srgb, currentColor 60%, transparent);
+}
+
+.dsh-bgm-result-summary {
+  align-self: center;
+  min-width: 0;
+}
+
+.dsh-bgm-result-heading {
+  margin-bottom: 4px;
+  color: color-mix(in srgb, var(--dsh-bgm-result-color) 76%, white);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .22em;
+}
+
+.dsh-bgm-result-score {
+  overflow: hidden;
+  font-size: 18px;
+  font-weight: 760;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .06em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dsh-bgm-result-accuracy {
+  margin-top: 3px;
+  color: color-mix(in srgb, var(--dsh-bgm-result-color) 72%, white);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.dsh-bgm-result-stats {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.dsh-bgm-result-stat {
+  display: grid;
+  min-width: 0;
+  padding-top: 7px;
+  border-top: 1px solid color-mix(in srgb, var(--dsh-bgm-result-color) 24%, transparent);
+  text-align: center;
+}
+
+.dsh-bgm-result-stat small {
+  overflow: hidden;
+  color: color-mix(in srgb, currentColor 62%, transparent);
+  font-size: 8px;
+  letter-spacing: .04em;
+  text-overflow: ellipsis;
+}
+
+.dsh-bgm-result-stat strong {
+  margin-top: 2px;
+  color: var(--dsh-bgm-result-color);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
 }
 
 .dsh-bgm-score {
@@ -258,6 +375,7 @@ html[data-dsh-bgm-hitstop] .dsh-bgm-hit-particle,
 html[data-dsh-bgm-hitstop] .dsh-bgm-hit-key,
 html[data-dsh-bgm-hitstop] .dsh-bgm-gold-streak,
 html[data-dsh-bgm-hitstop] .dsh-bgm-flow-ripple,
+html[data-dsh-bgm-hitstop] .dsh-bgm-center-ray,
 html[data-dsh-bgm-hitstop] .dsh-bgm-flow-breath,
 html[data-dsh-bgm-hitstop] .dsh-bgm-grade-float,
 html[data-dsh-bgm-hitstop] .dsh-bgm-judgement-line {
@@ -267,12 +385,14 @@ html[data-dsh-bgm-hitstop] .dsh-bgm-judgement-line {
 @media (prefers-reduced-motion: reduce) {
   .dsh-bgm-glyph { transform: none !important; scale: none !important; }
   [data-dsh-bgm-streaming-breath] { translate: none !important; scale: none !important; }
+  .dsh-bgm-result-card { transform: none !important; }
   .dsh-bgm-note,
   .dsh-bgm-hit-ring,
   .dsh-bgm-hit-particle,
   .dsh-bgm-hit-key,
   .dsh-bgm-gold-streak,
   .dsh-bgm-flow-ripple,
+  .dsh-bgm-center-ray,
   .dsh-bgm-flow-breath,
   .dsh-bgm-judgement-line,
   .dsh-bgm-combo,

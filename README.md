@@ -11,11 +11,15 @@ React-painted and receives only independent lane effects. Deep Diving is a
 downbeat lane driven by bass/onset, while the latest reasoning, tool or
 context-injection row is an independent flow lane driven by mid/treble change.
 Deep Diving retains about 60 downbeat combinations. Stable activity text is
-one continuous BPM-locked wave surface: valley, peak, travelling sine or saw.
+one continuous BPM-locked wave surface: valley, peak, travelling sine, saw or
+centre-out burst.
 Every glyph shares one timeline and a smooth position-derived height, so no
 character can detach into an independent trajectory. A fast-attack,
 slow-release RMS envelope continuously controls flow amplitude, glyph breathing,
 note-trail opacity and tracer brightness even between detected hits.
+Below a 500ms measured period, moving sine/burst surfaces become more likely;
+below 350ms a cue runs two phase cycles. Strong burst hits also emit two short
+local rays from the row centre toward its edges, never a page flash.
 
 The judgement lane stays hidden until two reliable flow intervals establish a
 measured period; there is no hard-coded bootstrap tempo. A glyph then launches
@@ -42,6 +46,11 @@ freeze. Combo 5/10/25 unlocks stronger local impacts, gold outlines and gold
 trails. Milestone words appear at 5/10/25/50. Only an expected pulse that
 expires without a nearby detection
 resets Combo.
+When system audio stays silent for 700ms, a session with at least one judgement
+ends on a local 3.2-second result card. It shows the final seven-digit score,
+S/A/B/C/D rank, accuracy, PERFECT/GREAT/GOOD/MISS counts and maximum Combo.
+The snapshot clears only after the card finishes; resumed audio dismisses and
+resets the old result before starting a new session.
 Very short Bash/Read calls trigger an immediate entry wave and retain only their
 latest row for 1.6 seconds, so their rhythm-game feedback survives completion.
 Running/streaming activity stays React-painted: it is never masked or mirrored

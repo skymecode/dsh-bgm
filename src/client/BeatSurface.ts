@@ -9,7 +9,7 @@ type TriggerOrder = 'together' | 'left-right' | 'right-left' | 'center-out'
 type MotionStyle = 'punch' | 'jump' | 'drop' | 'split' | 'converge'
   | 'zigzag' | 'snake' | 'stair-up' | 'stair-down' | 'fan' | 'orbit'
 type AttackStyle = 'snap' | 'bounce' | 'hold'
-type FlowWaveType = 'valley' | 'peak' | 'sine' | 'saw'
+type FlowWaveType = 'valley' | 'peak' | 'sine' | 'saw' | 'burst'
 
 interface ChartStyle {
   readonly order: TriggerOrder
@@ -63,6 +63,7 @@ interface WaveCue {
   readonly travelMs: number
   readonly durationMs: number
   flowTracerShown: boolean
+  centerBurstShown: boolean
 }
 
 interface PredictedNote {
@@ -93,20 +94,24 @@ function cueStrength(confidence: number): HitStrength {
   return confidence > 0.7 ? 'strong' : confidence > 0.46 ? 'medium' : 'weak'
 }
 
-/** Reduce the old per-glyph motion vocabulary to four continuous row surfaces. */
-function flowWaveType(motion: MotionStyle): FlowWaveType {
+/** Fast songs bias toward moving shapes; slow songs retain calmer surfaces. */
+function flowWaveType(motion: MotionStyle, periodMs: number, seed: number): FlowWaveType {
+  const fastRoll = hashUnit(seed, 211)
+  if (periodMs < 350) return fastRoll < 0.72 ? 'burst' : 'sine'
+  if (periodMs < 500 && fastRoll < 0.48) return 'burst'
   switch (motion) {
     case 'drop':
-    case 'converge': return 'valley'
+      return 'valley'
     case 'punch':
     case 'jump':
     case 'fan': return 'peak'
     case 'zigzag':
     case 'snake':
     case 'orbit': return 'sine'
-    case 'split':
     case 'stair-up':
     case 'stair-down': return 'saw'
+    case 'split':
+    case 'converge': return 'burst'
   }
 }
 
@@ -116,6 +121,11 @@ function flowWaveHeight(horizontal: number, phase: number, waveType: FlowWaveTyp
     case 'peak': return 1 - (horizontal - 0.5) ** 2 * 4
     case 'sine': return Math.sin(horizontal * Math.PI * 2 - phase) * 0.5 + 0.5
     case 'saw': return horizontal
+    case 'burst': {
+      const radius = Math.abs(horizontal - 0.5) * 2
+      const wavefront = phase / (Math.PI * 2) % 1
+      return Math.max(0, 1 - Math.abs(radius - wavefront) * 6)
+    }
   }
 }
 
@@ -551,6 +561,13 @@ export class BeatSurface {
   private score = 0
   private judgedCount = 0
   private accuracyPoints = 0
+  private perfectCount = 0
+  private greatCount = 0
+  private goodCount = 0
+  private missCount = 0
+  private maxCombo = 0
+  private resultCard: HTMLDivElement | undefined
+  private resultAnimation: Animation | undefined
   private noteIndex = 0
   private judgementIndex = 0
   private lastJudgementStrikeAt = 0
@@ -633,10 +650,7 @@ export class BeatSurface {
     this.currentActivityTarget = undefined
     this.currentDownbeatCue = undefined
     this.currentFlowCue = undefined
-    this.combo = 0
-    this.score = 0
-    this.judgedCount = 0
-    this.accuracyPoints = 0
+    this.dismissResultCard(true)
     this.noteIndex = 0
     this.judgementIndex = 0
     this.lastJudgementStrikeAt = 0
@@ -656,6 +670,7 @@ export class BeatSurface {
     for (const key of this.overlay.querySelectorAll('.dsh-bgm-hit-key')) key.remove()
     for (const streak of this.overlay.querySelectorAll('.dsh-bgm-gold-streak')) streak.remove()
     for (const ripple of this.overlay.querySelectorAll('.dsh-bgm-flow-ripple')) ripple.remove()
+    for (const ray of this.overlay.querySelectorAll('.dsh-bgm-center-ray')) ray.remove()
     for (const surface of this.surfaces.values()) this.removeSurface(surface)
     this.surfaces.clear()
   }
@@ -803,6 +818,7 @@ export class BeatSurface {
       if (this.silenceTimer !== undefined) window.clearTimeout(this.silenceTimer)
       this.silenceTimer = undefined
       if (!this.active) {
+        this.dismissResultCard(true)
         this.active = true
         document.documentElement.dataset.dshBgmActive = ''
         this.refresh()
@@ -1100,7 +1116,11 @@ export class BeatSurface {
     feedback.onfinish = () => note.element.remove()
 
     this.combo += 1
+    this.maxCombo = Math.max(this.maxCombo, this.combo)
     const grade = confidence >= 0.74 ? 'PERFECT' : confidence >= 0.5 ? 'GREAT' : 'GOOD'
+    if (grade === 'PERFECT') this.perfectCount += 1
+    else if (grade === 'GREAT') this.greatCount += 1
+    else this.goodCount += 1
     const gradeColor = impactColor
     const basePoints = grade === 'PERFECT' ? 1_000 : grade === 'GREAT' ? 650 : 300
     const comboBonus = Math.min(500, Math.max(0, this.combo - 1) * 25)
@@ -1200,6 +1220,7 @@ export class BeatSurface {
     this.comboLabel.style.color = ''
     this.clearComboAccents()
     if (showFeedback) {
+      this.missCount += 1
       this.recordAccuracy(0)
       this.flashMissLine()
       const x = note?.judgeX ?? fallbackPoint?.x
@@ -1231,6 +1252,112 @@ export class BeatSurface {
     this.accuracyPoints += points
     const percentage = this.accuracyPoints / this.judgedCount * 100
     this.accuracyLabel.textContent = `ACC ${percentage.toFixed(2)}%`
+  }
+
+  private resetScoreState(): void {
+    this.combo = 0
+    this.score = 0
+    this.judgedCount = 0
+    this.accuracyPoints = 0
+    this.perfectCount = 0
+    this.greatCount = 0
+    this.goodCount = 0
+    this.missCount = 0
+    this.maxCombo = 0
+    this.judgementIndex = 0
+  }
+
+  private dismissResultCard(resetState = false): void {
+    this.resultAnimation?.cancel()
+    this.resultAnimation = undefined
+    this.resultCard?.remove()
+    this.resultCard = undefined
+    if (resetState) this.resetScoreState()
+  }
+
+  /** Render a local, non-interactive rhythm-game result card for the finished session. */
+  private showResultCard(anchor: DOMRect | undefined): void {
+    if (this.judgedCount === 0) return
+    this.dismissResultCard(false)
+    const accuracy = this.accuracyPoints / this.judgedCount
+    const rank = accuracy >= 0.98 ? 'S' : accuracy >= 0.9 ? 'A'
+      : accuracy >= 0.8 ? 'B' : accuracy >= 0.7 ? 'C' : 'D'
+    const rankColor = rank === 'S' ? '#ffd76a' : rank === 'A' ? '#dce8f5'
+      : rank === 'B' ? '#8fd7ff' : rank === 'C' ? '#9cf2c5' : '#ff7a90'
+    const card = document.createElement('div')
+    card.className = 'dsh-bgm-result-card'
+    card.style.setProperty('--dsh-bgm-result-color', rankColor)
+
+    const rankLabel = document.createElement('div')
+    rankLabel.className = 'dsh-bgm-result-rank'
+    rankLabel.textContent = rank
+    const summary = document.createElement('div')
+    summary.className = 'dsh-bgm-result-summary'
+    const heading = document.createElement('div')
+    heading.className = 'dsh-bgm-result-heading'
+    heading.textContent = 'RESULT'
+    const score = document.createElement('div')
+    score.className = 'dsh-bgm-result-score'
+    score.textContent = `SCORE ${String(this.score).padStart(7, '0')}`
+    const accuracyLabel = document.createElement('div')
+    accuracyLabel.className = 'dsh-bgm-result-accuracy'
+    accuracyLabel.textContent = `ACC ${(accuracy * 100).toFixed(2)}%`
+    summary.append(heading, score, accuracyLabel)
+
+    const stats = document.createElement('div')
+    stats.className = 'dsh-bgm-result-stats'
+    const values: ReadonlyArray<readonly [string, number]> = [
+      ['PERFECT', this.perfectCount],
+      ['GREAT', this.greatCount],
+      ['GOOD', this.goodCount],
+      ['MISS', this.missCount],
+      ['MAX COMBO', this.maxCombo],
+    ]
+    for (const [label, value] of values) {
+      const item = document.createElement('span')
+      item.className = 'dsh-bgm-result-stat'
+      const name = document.createElement('small')
+      name.textContent = label
+      const count = document.createElement('strong')
+      count.textContent = String(value)
+      item.append(name, count)
+      stats.append(item)
+    }
+    card.append(rankLabel, summary, stats)
+    this.overlay.append(card)
+
+    const width = Math.min(360, Math.max(260, Math.min(anchor?.width ?? 320, window.innerWidth - 24)))
+    const preferredLeft = anchor?.left ?? (window.innerWidth - width) / 2
+    const left = clamp(preferredLeft, 12, Math.max(12, window.innerWidth - width - 12))
+    const preferredTop = anchor === undefined ? window.innerHeight / 2 - 92 : anchor.bottom + 14
+    const top = clamp(preferredTop, 12, Math.max(12, window.innerHeight - 196))
+    card.style.width = `${width}px`
+    card.style.left = `${left}px`
+    card.style.top = `${top}px`
+
+    this.resultCard = card
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const frames: Keyframe[] = reducedMotion
+      ? [
+          { opacity: 1 },
+          { opacity: 1, offset: 0.88 },
+          { opacity: 0 },
+        ]
+      : [
+          { opacity: 0, transform: 'translateY(10px) scale(.96)' },
+          { opacity: 1, transform: 'translateY(0) scale(1)', offset: 0.12 },
+          { opacity: 1, transform: 'translateY(0) scale(1)', offset: 0.82 },
+          { opacity: 0, transform: 'translateY(-7px) scale(.985)' },
+        ]
+    const animation = card.animate(frames, { duration: 3_200, easing: 'cubic-bezier(.18,.78,.24,1)' })
+    this.resultAnimation = animation
+    animation.onfinish = () => {
+      if (this.resultCard !== card) return
+      card.remove()
+      this.resultCard = undefined
+      this.resultAnimation = undefined
+      this.resetScoreState()
+    }
   }
 
   private showHitRing(x: number, y: number, confidence: number): void {
@@ -1541,6 +1668,7 @@ export class BeatSurface {
           travelMs: 90 + energy * 150,
           durationMs: 390 + energy * 140,
           flowTracerShown: false,
+          centerBurstShown: false,
         }
       : {
           lane,
@@ -1557,6 +1685,7 @@ export class BeatSurface {
           travelMs: periodMs ?? 0,
           durationMs: clamp((periodMs ?? 0) * 0.34, 180, 340),
           flowTracerShown: false,
+          centerBurstShown: false,
         }
 
     if (lane === 'downbeat') {
@@ -1715,6 +1844,10 @@ export class BeatSurface {
     const elapsed = Math.max(0, now - cue.startedAt)
     const strong = cue.sampleKind === 'detected' && cue.strength === 'strong'
     const weak = cue.sampleKind === 'fallback' || cue.strength === 'weak'
+    const waveType = flowWaveType(cue.style.motion, periodMs, cue.seed)
+    if (strong && waveType === 'burst' && elapsed < 50 && surface === this.judgementSurface()) {
+      this.showCenterBurst(surface, cue)
+    }
     if (surface.streaming) {
       this.showFlowRipple(surface, cue, now, stepMs)
       if (strong && elapsed < 50) this.strikeJudgementLine(cue.confidence)
@@ -1740,11 +1873,12 @@ export class BeatSurface {
     const lift = (strong
       ? 18 + volume * 6
       : weak ? 5 + volume * 3 : 11 + volume * 4) * comboMultiplier
-    const waveType = flowWaveType(cue.style.motion)
     const reverse = cue.style.order === 'right-left' || cue.style.order === 'edges-in'
     const waveDurationMs = periodMs
     if (elapsed >= waveDurationMs) return
-    const frameOffsets = [0, 0.08, 0.18, 0.3, 0.42, 0.55, 0.68, 0.82, 1] as const
+    const phaseMultiplier = periodMs < 350 ? 2 : periodMs < 500 ? 1.5 : 1
+    const sampleCount = periodMs < 350 ? 16 : periodMs < 500 ? 12 : 10
+    const frameOffsets = Array.from({ length: sampleCount + 1 }, (_, index) => index / sampleCount)
     const peakShadow = cue.goldAccent
       ? '0 0 2px #fff7c2, 0 0 9px #ffd76a'
       : strong
@@ -1763,7 +1897,7 @@ export class BeatSurface {
       const restShadow = '0 0 0 transparent'
       const frames: Keyframe[] = frameOffsets.map((progress) => {
         const envelope = Math.sin(Math.PI * progress)
-        const phase = progress * Math.PI * 2
+        const phase = progress * Math.PI * 2 * phaseMultiplier
         const height = flowWaveHeight(horizontal, phase, waveType)
         const peakY = -lift * envelope * height
         const scaleY = flowImpactScaleY(progress, cue.strength)
@@ -1778,6 +1912,40 @@ export class BeatSurface {
         delay: -elapsed,
         easing: 'linear',
       })
+    }
+  }
+
+  /** A strong burst sends two short local rays from the row centre to its edges. */
+  private showCenterBurst(surface: Surface, cue: WaveCue): void {
+    if (cue.centerBurstShown) return
+    const rect = surface.target.getBoundingClientRect()
+    if (!isVisible(rect)) return
+    cue.centerBurstShown = true
+    const segmentWidth = clamp(rect.width * 0.14, 18, 58)
+    const travel = Math.max(8, rect.width / 2 - segmentWidth)
+    const duration = clamp((cue.periodMs ?? 420) * 0.42, 120, 260)
+    const peakOpacity = clamp(0.46 + this.energyEnvelope * 0.34 + cue.confidence * 0.16, 0, 0.94)
+    const centerX = rect.left + rect.width / 2
+    const centerY = rect.top + rect.height / 2
+    for (const direction of [-1, 1] as const) {
+      const ray = document.createElement('span')
+      ray.className = direction < 0
+        ? 'dsh-bgm-center-ray dsh-bgm-center-ray--left'
+        : 'dsh-bgm-center-ray'
+      ray.style.left = `${direction < 0 ? centerX - segmentWidth : centerX}px`
+      ray.style.top = `${centerY - 1}px`
+      ray.style.width = `${segmentWidth}px`
+      ray.style.color = cue.goldAccent ? '#ffd76a' : '#8fd7ff'
+      this.overlay.append(ray)
+      const animation = ray.animate([
+        { opacity: 0, transform: 'translate3d(0, 0, 0) scaleX(.08)' },
+        { opacity: peakOpacity, transform: 'translate3d(0, 0, 0) scaleX(.9)', offset: 0.12 },
+        {
+          opacity: 0,
+          transform: `translate3d(${(direction * travel).toFixed(2)}px, 0, 0) scaleX(1.35)`,
+        },
+      ], { duration, easing: 'cubic-bezier(.12,.72,.2,1)' })
+      animation.onfinish = () => ray.remove()
     }
   }
 
@@ -1837,6 +2005,8 @@ export class BeatSurface {
 
   private deactivate(): void {
     if (!this.active && this.surfaces.size === 0) return
+    const resultAnchor = this.judgementSurface()?.target.getBoundingClientRect()
+    const shouldShowResult = this.judgedCount > 0 && !this.finalOutputStreaming
     this.active = false
     delete document.documentElement.dataset.dshBgmActive
     this.beatDetector.reset()
@@ -1854,12 +2024,7 @@ export class BeatSurface {
     this.retainedActivity = undefined
     this.retainActivityUntil = 0
     this.currentActivityTarget = undefined
-    this.combo = 0
-    this.score = 0
-    this.judgedCount = 0
-    this.accuracyPoints = 0
     this.noteIndex = 0
-    this.judgementIndex = 0
     this.lastJudgementStrikeAt = 0
     this.clearHitstop()
     this.clearEnergyLayer()
@@ -1876,8 +2041,11 @@ export class BeatSurface {
     for (const key of this.overlay.querySelectorAll('.dsh-bgm-hit-key')) key.remove()
     for (const streak of this.overlay.querySelectorAll('.dsh-bgm-gold-streak')) streak.remove()
     for (const ripple of this.overlay.querySelectorAll('.dsh-bgm-flow-ripple')) ripple.remove()
+    for (const ray of this.overlay.querySelectorAll('.dsh-bgm-center-ray')) ray.remove()
     for (const surface of this.surfaces.values()) this.removeSurface(surface)
     this.surfaces.clear()
+    if (shouldShowResult) this.showResultCard(resultAnchor)
+    else this.resetScoreState()
   }
 
   private dispose(): void {
@@ -1894,6 +2062,7 @@ export class BeatSurface {
     this.refreshTimer = undefined
     this.silenceTimer = undefined
     this.deactivate()
+    this.dismissResultCard(true)
     this.overlay.remove()
   }
 }
