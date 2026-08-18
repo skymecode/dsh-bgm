@@ -1,0 +1,5 @@
+# DSH profile bundle layer. Installing this package inserts its Host half;
+# package.json's dsh.client declaration makes the Web half load as well.
+- insert:
+    - id: bgm
+      name: dsh-bgm

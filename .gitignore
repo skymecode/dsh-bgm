@@ -1,0 +1,8 @@
+node_modules/
+lib/
+*.tsbuildinfo
+.DS_Store
+native/windows/bin/
+native/windows/obj/
+native/windows/publish/
+native/bin/
