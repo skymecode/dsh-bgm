@@ -36,6 +36,8 @@ interface Surface {
   readonly target: HTMLElement
   readonly kind: SurfaceKind
   readonly glyphs: Glyph[]
+  readonly glyphCount: number
+  readonly streaming: boolean
   readonly masked: Set<HTMLElement>
   readonly signature: string
 }
@@ -463,9 +465,19 @@ function nodeHasFinalStreamMarker(node: Node): boolean {
   return node.matches(selector) || node.querySelector(selector) !== null
 }
 
+/** Running activity text remains React-owned and visually untouched while it streams. */
+function isStreamingActivity(target: HTMLElement, kind: SurfaceKind): boolean {
+  if (kind === 'deep-diving') return false
+  const owner = target.closest<HTMLElement>(
+    '[data-variant], [data-chat-call-id], [data-chat-flow-kind="context"]',
+  ) ?? target
+  const marker = '[data-state="running"], [data-streaming]'
+  return owner.matches(marker) || owner.querySelector(marker) !== null
+}
+
 /**
- * Paint a small pointer-transparent per-grapheme layer over only the current
- * activity row. React retains ownership of every original text node.
+ * Stable rows get a pointer-transparent per-grapheme layer. Streaming rows
+ * remain entirely React-painted and keep only a lightweight rhythm anchor.
  */
 export class BeatSurface {
   private readonly overlay = document.createElement('div')
@@ -864,23 +876,44 @@ export class BeatSurface {
 
   private spawnPredictedNote(targetAt: number, travelMs: number, now: number): void {
     const surface = this.judgementSurface()
-    if (surface === undefined || surface.glyphs.length === 0) return
+    if (surface === undefined) return
     this.updateJudgementAnchor()
     const rect = surface.target.getBoundingClientRect()
     if (!isVisible(rect)) return
     const candidates = surface.glyphs.filter(glyph => /[\p{L}\p{N}]/u.test(glyph.element.textContent ?? ''))
     const sources = candidates.length > 0 ? candidates : surface.glyphs
-    const reverseIndex = this.noteIndex % sources.length
+    const reverseIndex = sources.length > 0 ? this.noteIndex % sources.length : 0
     const source = sources[sources.length - 1 - reverseIndex] ?? sources.at(-1)
-    if (source === undefined) return
     this.noteIndex += 1
 
-    const note = source.element.cloneNode(true) as HTMLSpanElement
+    const note = (source?.element.cloneNode(true) as HTMLSpanElement | undefined)
+      ?? document.createElement('span')
     note.className = 'dsh-bgm-note'
-    const width = Math.max(8, Number.parseFloat(source.element.style.width) || 8)
-    const height = Math.max(8, Number.parseFloat(source.element.style.height) || 8)
+    const computed = source === undefined ? getComputedStyle(surface.target) : undefined
+    if (source === undefined) {
+      note.textContent = '♪'
+      note.style.display = 'block'
+      note.style.fontFamily = computed?.fontFamily ?? 'system-ui, sans-serif'
+      note.style.fontWeight = '700'
+    }
+    const fallbackFontSize = Math.max(12, Number.parseFloat(computed?.fontSize ?? '') || 14)
+    const width = source === undefined
+      ? fallbackFontSize
+      : Math.max(8, Number.parseFloat(source.element.style.width) || 8)
+    const height = source === undefined
+      ? Math.min(Math.max(14, fallbackFontSize * 1.2), Math.max(14, rect.height))
+      : Math.max(8, Number.parseFloat(source.element.style.height) || 8)
+    if (source === undefined) {
+      note.style.width = `${width}px`
+      note.style.height = `${height}px`
+      note.style.fontSize = `${fallbackFontSize}px`
+      note.style.lineHeight = `${height}px`
+      note.style.textAlign = 'center'
+    }
     const startX = rect.right - width
-    const landingTop = Number.parseFloat(source.element.style.top) || rect.top
+    const landingTop = source === undefined
+      ? rect.top + (rect.height - height) / 2
+      : Number.parseFloat(source.element.style.top) || rect.top
     const judgeX = rect.left
     const judgeY = landingTop + height / 2
     const landingLeft = judgeX - width / 2
@@ -1221,57 +1254,74 @@ export class BeatSurface {
 
   private rebuild(candidate: Candidate): void {
     const rect = candidate.target.getBoundingClientRect()
-    const runs = textRuns(candidate.target)
-    const signature = [
+    const streaming = isStreamingActivity(candidate.target, candidate.kind)
+    // Never walk/segment a growing React text tree. Besides avoiding mirrored
+    // glyph churn, this keeps every streaming token update O(1) here.
+    const runs = streaming ? [] : textRuns(candidate.target)
+    const glyphCount = streaming
+      ? Math.min(MAX_GLYPHS_PER_SURFACE, Math.max(1, Math.round(rect.width / 11)))
+      : Math.min(
+        MAX_GLYPHS_PER_SURFACE,
+        runs.reduce((count, run) => count
+          + run.segments.filter(segment => segment.segment.trim() !== '').length, 0),
+      )
+    const signatureParts: Array<string | number> = [
       candidate.kind,
-      ...runs.map(runSignature),
+      streaming ? 'streaming' : 'stable',
       Math.round(rect.left), Math.round(rect.top), Math.round(rect.width), Math.round(rect.height),
-    ].join('\u0000')
+    ]
+    if (streaming) signatureParts.push(glyphCount)
+    else signatureParts.push(...runs.map(runSignature))
+    const signature = signatureParts.join('\u0000')
     const previous = this.surfaces.get(candidate.target)
     if (previous?.signature === signature) return
     if (previous !== undefined) this.removeSurface(previous)
 
     const glyphs: Glyph[] = []
     const masked = new Set<HTMLElement>()
-    const range = document.createRange()
-    let paintedCount = 0
-    for (const run of runs) {
-      const computed = getComputedStyle(run.parent)
-      const clip = clipBounds(run.parent, candidate.target, rect)
-      let paintedRun = false
-      for (const segment of run.segments) {
-        if (paintedCount >= MAX_GLYPHS_PER_SURFACE) break
-        if (segment.segment.trim() === '') continue
-        range.setStart(run.node, segment.index)
-        range.setEnd(run.node, segment.index + segment.segment.length)
-        const glyphRect = range.getBoundingClientRect()
-        const centerX = glyphRect.left + glyphRect.width / 2
-        const centerY = glyphRect.top + glyphRect.height / 2
-        const insideClip = centerX >= clip.left && centerX <= clip.right
-          && centerY >= clip.top && centerY <= clip.bottom
-        if (!isVisible(glyphRect) || !insideClip) continue
-        const element = document.createElement('span')
-        element.className = 'dsh-bgm-glyph'
-        element.textContent = segment.segment
-        glyphStyle(element, computed, glyphRect, candidate.kind)
-        this.overlay.append(element)
-        glyphs.push({
-          element,
-          centerX,
-          centerY,
-        })
-        paintedCount += 1
-        paintedRun = true
+    if (!streaming) {
+      const range = document.createRange()
+      let paintedCount = 0
+      for (const run of runs) {
+        const computed = getComputedStyle(run.parent)
+        const clip = clipBounds(run.parent, candidate.target, rect)
+        let paintedRun = false
+        for (const segment of run.segments) {
+          if (paintedCount >= MAX_GLYPHS_PER_SURFACE) break
+          if (segment.segment.trim() === '') continue
+          range.setStart(run.node, segment.index)
+          range.setEnd(run.node, segment.index + segment.segment.length)
+          const glyphRect = range.getBoundingClientRect()
+          const centerX = glyphRect.left + glyphRect.width / 2
+          const centerY = glyphRect.top + glyphRect.height / 2
+          const insideClip = centerX >= clip.left && centerX <= clip.right
+            && centerY >= clip.top && centerY <= clip.bottom
+          if (!isVisible(glyphRect) || !insideClip) continue
+          const element = document.createElement('span')
+          element.className = 'dsh-bgm-glyph'
+          element.textContent = segment.segment
+          glyphStyle(element, computed, glyphRect, candidate.kind)
+          this.overlay.append(element)
+          glyphs.push({
+            element,
+            centerX,
+            centerY,
+          })
+          paintedCount += 1
+          paintedRun = true
+        }
+        if (paintedRun) masked.add(run.parent)
       }
-      if (paintedRun) masked.add(run.parent)
+      range.detach()
     }
-    range.detach()
     for (const parent of masked) parent.dataset.dshBgmMasked = ''
 
     const surface: Surface = {
       target: candidate.target,
       kind: candidate.kind,
       glyphs,
+      glyphCount,
+      streaming,
       masked,
       signature,
     }
@@ -1493,12 +1543,19 @@ export class BeatSurface {
   /** Flow restores arcade chart modes while every propagation step stays BPM-locked. */
   private animateFlowScan(surface: Surface, cue: WaveCue, now: number): void {
     const periodMs = cue.periodMs
-    if (periodMs === undefined || surface.glyphs.length === 0) return
-    const glyphs = surface.glyphs
-    const stepMs = clamp(periodMs / glyphs.length, 18, 60)
+    if (periodMs === undefined) return
+    const stepMs = clamp(periodMs / Math.max(1, surface.glyphCount), 18, 60)
     const elapsed = Math.max(0, now - cue.startedAt)
     const strong = cue.sampleKind === 'detected' && cue.strength === 'strong'
     const weak = cue.sampleKind === 'fallback' || cue.strength === 'weak'
+    if (surface.streaming) {
+      this.showFlowRipple(surface, cue, now, stepMs)
+      if (strong && elapsed < 50) this.strikeJudgementLine(cue.confidence)
+      return
+    }
+
+    const glyphs = surface.glyphs
+    if (glyphs.length === 0) return
     const directionalRipple = cue.style.order === 'left-right' || cue.style.order === 'right-left'
     if (weak && directionalRipple) this.showFlowRipple(surface, cue, now, stepMs)
     if (strong && elapsed < 50) this.strikeJudgementLine(cue.confidence)
@@ -1643,7 +1700,8 @@ export class BeatSurface {
     cue.flowTracerShown = true
     const rect = surface.target.getBoundingClientRect()
     if (!isVisible(rect)) return
-    const totalMs = clamp((surface.glyphs.length - 1) * stepMs + cue.durationMs * 0.55, 180, 2_500)
+    const totalMs = clamp((Math.max(1, surface.glyphCount) - 1) * stepMs
+      + cue.durationMs * 0.55, 180, 2_500)
     const elapsed = Math.max(0, now - cue.startedAt)
     if (elapsed >= totalMs) return
     const progress = clamp(elapsed / totalMs, 0, 1)

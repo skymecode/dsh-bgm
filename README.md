@@ -41,6 +41,11 @@ expires without a nearby detection
 resets Combo.
 Very short Bash/Read calls trigger an immediate entry wave and retain only their
 latest row for 1.6 seconds, so their rhythm-game feedback survives completion.
+Running/streaming activity stays React-painted: it is never masked or mirrored
+per glyph, so token updates cannot restart text animation. During that phase a
+small music-note projectile, judgement line and independent row tracer carry
+the rhythm. Once the row becomes stable, its full BPM chart choreography is
+enabled again.
 Final answers never animate: once the official final-text stream begins, the
 visual layer tears down and ignores subsequent token mutations. Hits use only
 activity-text, judgement-line, ring and small local keycap feedback; the page
