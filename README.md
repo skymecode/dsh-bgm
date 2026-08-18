@@ -13,7 +13,9 @@ context-injection row is an independent flow lane driven by mid/treble change.
 Deep Diving retains about 60 downbeat combinations. Stable activity text is
 one continuous BPM-locked wave surface: valley, peak, travelling sine or saw.
 Every glyph shares one timeline and a smooth position-derived height, so no
-character can detach into an independent trajectory.
+character can detach into an independent trajectory. A fast-attack,
+slow-release RMS envelope continuously controls flow amplitude, glyph breathing,
+note-trail opacity and tracer brightness even between detected hits.
 
 The judgement lane stays hidden until two reliable flow intervals establish a
 measured period; there is no hard-coded bootstrap tempo. A glyph then launches
@@ -43,10 +45,10 @@ resets Combo.
 Very short Bash/Read calls trigger an immediate entry wave and retain only their
 latest row for 1.6 seconds, so their rhythm-game feedback survives completion.
 Running/streaming activity stays React-painted: it is never masked or mirrored
-per glyph, so token updates cannot restart text animation. During that phase a
-small music-note projectile, judgement line and independent row tracer carry
-the rhythm. Once the row becomes stable, its full BPM chart choreography is
-enabled again.
+per glyph, so token updates cannot restart text animation. Its real DOM row
+rises by at most 3px and stretches by at most 1.5% with the volume envelope,
+while a local underline, music-note projectile and judgement line carry the
+rhythm. Once the row becomes stable, its continuous BPM wave surface is enabled.
 Final answers never animate: once the official final-text stream begins, the
 visual layer tears down and ignores subsequent token mutations. Hits use only
 activity-text, judgement-line, ring and small local keycap feedback; the page

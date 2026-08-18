@@ -523,12 +523,14 @@ export class BeatSurface {
   private readonly scoreDeltaLabel = document.createElement('div')
   private readonly accuracyLabel = document.createElement('div')
   private readonly surfaces = new Map<HTMLElement, Surface>()
+  private readonly breathLayers = new Map<HTMLElement, HTMLSpanElement>()
   private readonly observer: MutationObserver
   private readonly beatDetector = new BeatDetector()
   private readonly flowDetector = new FlowDetector()
   private disposeStream: (() => void) | undefined
   private refreshFrame: number | undefined
   private refreshTimer: number | undefined
+  private energyRenderFrame: number | undefined
   private silenceTimer: number | undefined
   private lastFrame: RhythmFrame | undefined
   private retainedActivity: Candidate | undefined
@@ -555,6 +557,8 @@ export class BeatSurface {
   private lastHitstopAt = 0
   private hitstopTimer: number | undefined
   private hitstopAnimations: Animation[] = []
+  private energyTarget = 0
+  private energyEnvelope = 0
 
   constructor() {
     this.overlay.dataset.dshBgmOverlay = ''
@@ -637,6 +641,7 @@ export class BeatSurface {
     this.judgementIndex = 0
     this.lastJudgementStrikeAt = 0
     this.clearHitstop()
+    this.clearEnergyLayer()
     for (const animation of this.judgementLine.getAnimations()) animation.cancel()
     this.judgementLine.hidden = true
     this.comboLabel.hidden = true
@@ -685,6 +690,85 @@ export class BeatSurface {
     return () => { this.dispose() }
   }
 
+  /** Track loudness continuously; attack is fast while release stays musical. */
+  private trackEnergy(frame: RhythmFrame): void {
+    this.energyTarget = clamp(
+      (frame.rms - SOUND_THRESHOLD) / (1 - SOUND_THRESHOLD),
+      0,
+      1,
+    )
+    const smoothing = this.energyTarget > this.energyEnvelope ? 0.52 : 0.12
+    this.energyEnvelope += (this.energyTarget - this.energyEnvelope) * smoothing
+    if (!this.finalOutputStreaming && this.energyRenderFrame === undefined) {
+      this.energyRenderFrame = requestAnimationFrame(this.renderEnergyLayer)
+    }
+  }
+
+  /** One coalesced compositor write per audio frame; CSS interpolates between writes. */
+  private readonly renderEnergyLayer = (): void => {
+    this.energyRenderFrame = undefined
+    if (!this.active || this.finalOutputStreaming) return
+    const energy = clamp(this.energyEnvelope, 0, 1)
+    this.overlay.style.setProperty('--dsh-bgm-energy-scale', (1 + energy * 0.03).toFixed(4))
+    this.overlay.style.setProperty(
+      '--dsh-bgm-note-trail-opacity',
+      clamp(0.34 + energy * 0.58, 0.34, 0.92).toFixed(3),
+    )
+    this.overlay.style.setProperty(
+      '--dsh-bgm-energy-brightness',
+      (0.68 + energy * 0.72).toFixed(3),
+    )
+    for (const surface of this.surfaces.values()) {
+      if (!surface.streaming) continue
+      const layer = this.ensureBreathLayer(surface.target)
+      const rise = -energy * 3
+      surface.target.style.setProperty('--dsh-bgm-breath-y', `${rise.toFixed(2)}px`)
+      surface.target.style.setProperty('--dsh-bgm-breath-scale', (1 + energy * 0.015).toFixed(4))
+      const rect = surface.target.getBoundingClientRect()
+      if (!isVisible(rect)) {
+        layer.hidden = true
+        continue
+      }
+      layer.hidden = false
+      layer.style.left = `${rect.left}px`
+      layer.style.top = `${rect.bottom + 1}px`
+      layer.style.width = `${rect.width}px`
+      layer.style.opacity = (0.04 + energy * 0.32).toFixed(3)
+      layer.style.transform = `scaleX(${(0.55 + energy * 0.45).toFixed(3)})`
+    }
+    this.updateJudgementAnchor()
+  }
+
+  private ensureBreathLayer(target: HTMLElement): HTMLSpanElement {
+    const existing = this.breathLayers.get(target)
+    if (existing !== undefined) return existing
+    const layer = document.createElement('span')
+    layer.className = 'dsh-bgm-flow-breath'
+    this.overlay.append(layer)
+    this.breathLayers.set(target, layer)
+    target.dataset.dshBgmStreamingBreath = ''
+    return layer
+  }
+
+  private removeBreathLayer(target: HTMLElement): void {
+    this.breathLayers.get(target)?.remove()
+    this.breathLayers.delete(target)
+    delete target.dataset.dshBgmStreamingBreath
+    target.style.removeProperty('--dsh-bgm-breath-y')
+    target.style.removeProperty('--dsh-bgm-breath-scale')
+  }
+
+  private clearEnergyLayer(): void {
+    if (this.energyRenderFrame !== undefined) cancelAnimationFrame(this.energyRenderFrame)
+    this.energyRenderFrame = undefined
+    this.energyTarget = 0
+    this.energyEnvelope = 0
+    this.overlay.style.removeProperty('--dsh-bgm-energy-scale')
+    this.overlay.style.removeProperty('--dsh-bgm-note-trail-opacity')
+    this.overlay.style.removeProperty('--dsh-bgm-energy-brightness')
+    for (const target of [...this.breathLayers.keys()]) this.removeBreathLayer(target)
+  }
+
   private readonly scheduleRefresh = (): void => {
     if (!this.active || this.finalOutputStreaming
       || this.refreshFrame !== undefined || this.refreshTimer !== undefined) return
@@ -714,6 +798,7 @@ export class BeatSurface {
       return
     }
     this.lastFrame = frame
+    this.trackEnergy(frame)
     if (hasSound(frame)) {
       if (this.silenceTimer !== undefined) window.clearTimeout(this.silenceTimer)
       this.silenceTimer = undefined
@@ -1336,17 +1421,18 @@ export class BeatSurface {
         runs.reduce((count, run) => count
           + run.segments.filter(segment => segment.segment.trim() !== '').length, 0),
       )
-    const signatureParts: Array<string | number> = [
-      candidate.kind,
-      streaming ? 'streaming' : 'stable',
-      Math.round(rect.left), Math.round(rect.top), Math.round(rect.width), Math.round(rect.height),
-    ]
-    if (streaming) signatureParts.push(glyphCount)
-    else signatureParts.push(...runs.map(runSignature))
+    const signatureParts: Array<string | number> = streaming
+      ? [candidate.kind, 'streaming', Math.round(rect.width), glyphCount]
+      : [
+          candidate.kind,
+          'stable',
+          Math.round(rect.left), Math.round(rect.top), Math.round(rect.width), Math.round(rect.height),
+          ...runs.map(runSignature),
+        ]
     const signature = signatureParts.join('\u0000')
     const previous = this.surfaces.get(candidate.target)
     if (previous?.signature === signature) return
-    if (previous !== undefined) this.removeSurface(previous)
+    if (previous !== undefined) this.removeSurface(previous, streaming)
 
     const glyphs: Glyph[] = []
     const masked = new Set<HTMLElement>()
@@ -1369,7 +1455,9 @@ export class BeatSurface {
             && centerY >= clip.top && centerY <= clip.bottom
           if (!isVisible(glyphRect) || !insideClip) continue
           const element = document.createElement('span')
-          element.className = 'dsh-bgm-glyph'
+          element.className = candidate.kind === 'deep-diving'
+            ? 'dsh-bgm-glyph'
+            : 'dsh-bgm-glyph dsh-bgm-glyph--flow'
           element.textContent = segment.segment
           glyphStyle(element, computed, glyphRect, candidate.kind)
           this.overlay.append(element)
@@ -1398,6 +1486,14 @@ export class BeatSurface {
     }
     this.surfaces.set(candidate.target, surface)
     candidate.target.dataset.dshBgmReactive = candidate.kind
+    if (streaming) {
+      this.ensureBreathLayer(candidate.target)
+      if (this.energyRenderFrame === undefined) {
+        this.energyRenderFrame = requestAnimationFrame(this.renderEnergyLayer)
+      }
+    } else {
+      this.removeBreathLayer(candidate.target)
+    }
     const cue = surface.kind === 'deep-diving' ? this.currentDownbeatCue : this.currentFlowCue
     const now = performance.now()
     if (cue !== undefined && now < cue.startedAt + cue.travelMs + cue.durationMs) {
@@ -1640,9 +1736,10 @@ export class BeatSurface {
     const xSpan = Math.max(1, maxX - minX)
 
     const comboMultiplier = cue.comboBoost ? 1.1 : 1
+    const volume = clamp(this.energyEnvelope, 0, 1)
     const lift = (strong
-      ? 18 + cue.energy * 6
-      : weak ? 5 + cue.energy * 3 : 11 + cue.energy * 4) * comboMultiplier
+      ? 18 + volume * 6
+      : weak ? 5 + volume * 3 : 11 + volume * 4) * comboMultiplier
     const waveType = flowWaveType(cue.style.motion)
     const reverse = cue.style.order === 'right-left' || cue.style.order === 'edges-in'
     const waveDurationMs = periodMs
@@ -1697,7 +1794,8 @@ export class BeatSurface {
     const progress = clamp(elapsed / totalMs, 0, 1)
     const leftToRight = cue.style.order === 'left-right'
     const direction = leftToRight ? 1 : -1
-    const peakOpacity = cue.strength === 'medium' ? 0.2 : 0.11
+    const baseOpacity = cue.strength === 'medium' ? 0.2 : 0.11
+    const peakOpacity = clamp(baseOpacity * (0.52 + this.energyEnvelope * 0.78), 0.045, 0.27)
     const startOpacity = progress < 0.08
       ? peakOpacity * progress / 0.08
       : peakOpacity * (1 - progress) / 0.92
@@ -1727,12 +1825,13 @@ export class BeatSurface {
     animation.onfinish = () => ripple.remove()
   }
 
-  private removeSurface(surface: Surface): void {
+  private removeSurface(surface: Surface, preserveBreath = false): void {
     for (const glyph of surface.glyphs) glyph.element.remove()
     for (const parent of surface.masked) delete parent.dataset.dshBgmMasked
     for (const parent of surface.target.querySelectorAll<HTMLElement>('[data-dsh-bgm-masked]')) {
       delete parent.dataset.dshBgmMasked
     }
+    if (!preserveBreath) this.removeBreathLayer(surface.target)
     delete surface.target.dataset.dshBgmReactive
   }
 
@@ -1763,6 +1862,7 @@ export class BeatSurface {
     this.judgementIndex = 0
     this.lastJudgementStrikeAt = 0
     this.clearHitstop()
+    this.clearEnergyLayer()
     this.judgementLine.hidden = true
     this.comboLabel.hidden = true
     this.scoreLabel.hidden = true
@@ -1789,6 +1889,7 @@ export class BeatSurface {
     if (this.refreshFrame !== undefined) cancelAnimationFrame(this.refreshFrame)
     if (this.refreshTimer !== undefined) window.clearTimeout(this.refreshTimer)
     if (this.silenceTimer !== undefined) window.clearTimeout(this.silenceTimer)
+    this.clearEnergyLayer()
     this.refreshFrame = undefined
     this.refreshTimer = undefined
     this.silenceTimer = undefined

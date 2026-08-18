@@ -12,6 +12,11 @@ const stylesheet = `
   text-rendering: inherit;
 }
 
+.dsh-bgm-glyph--flow {
+  scale: var(--dsh-bgm-energy-scale, 1);
+  transition: scale 65ms linear;
+}
+
 .dsh-bgm-note {
   position: fixed;
   z-index: 2147483002;
@@ -40,7 +45,7 @@ const stylesheet = `
   height: 4px;
   pointer-events: none;
   border-radius: 999px;
-  opacity: .82;
+  opacity: var(--dsh-bgm-note-trail-opacity, .82);
   background: linear-gradient(
     90deg,
     currentColor 0,
@@ -164,7 +169,20 @@ const stylesheet = `
   pointer-events: none;
   border-radius: 50%;
   background: linear-gradient(90deg, transparent, currentColor, transparent);
-  filter: blur(.4px);
+  filter: blur(.4px) brightness(var(--dsh-bgm-energy-brightness, 1));
+  will-change: transform, opacity;
+}
+
+.dsh-bgm-flow-breath {
+  position: fixed;
+  z-index: 2147483001;
+  height: 2px;
+  pointer-events: none;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, #8fd7ff 18%, #c9ecff 50%, #8fd7ff 82%, transparent);
+  box-shadow: 0 0 5px color-mix(in srgb, #8fd7ff 62%, transparent);
+  transform-origin: 50% 50%;
+  transition: opacity 65ms linear, transform 65ms linear;
   will-change: transform, opacity;
 }
 
@@ -216,6 +234,14 @@ html[data-dsh-bgm-active] [data-dsh-bgm-masked] {
   text-shadow: none !important;
 }
 
+html[data-dsh-bgm-active] [data-dsh-bgm-streaming-breath] {
+  translate: 0 var(--dsh-bgm-breath-y, 0);
+  scale: 1 var(--dsh-bgm-breath-scale, 1);
+  transform-origin: 50% 50%;
+  transition: translate 65ms linear, scale 65ms linear;
+  will-change: translate, scale;
+}
+
 /* DSH paints Deep Diving with a gradient clipped into transparent text. The
    gradient must be disabled as well as the text color or it remains as a
    second, shimmering copy underneath the beat glyphs. */
@@ -232,19 +258,22 @@ html[data-dsh-bgm-hitstop] .dsh-bgm-hit-particle,
 html[data-dsh-bgm-hitstop] .dsh-bgm-hit-key,
 html[data-dsh-bgm-hitstop] .dsh-bgm-gold-streak,
 html[data-dsh-bgm-hitstop] .dsh-bgm-flow-ripple,
+html[data-dsh-bgm-hitstop] .dsh-bgm-flow-breath,
 html[data-dsh-bgm-hitstop] .dsh-bgm-grade-float,
 html[data-dsh-bgm-hitstop] .dsh-bgm-judgement-line {
   animation-play-state: paused !important;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .dsh-bgm-glyph { transform: none !important; }
+  .dsh-bgm-glyph { transform: none !important; scale: none !important; }
+  [data-dsh-bgm-streaming-breath] { translate: none !important; scale: none !important; }
   .dsh-bgm-note,
   .dsh-bgm-hit-ring,
   .dsh-bgm-hit-particle,
   .dsh-bgm-hit-key,
   .dsh-bgm-gold-streak,
   .dsh-bgm-flow-ripple,
+  .dsh-bgm-flow-breath,
   .dsh-bgm-judgement-line,
   .dsh-bgm-combo,
   .dsh-bgm-grade-float,
