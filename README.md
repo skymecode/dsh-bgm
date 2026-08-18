@@ -8,8 +8,9 @@ path. The Host reduces raw PCM to RMS/bass/mid/treble/onset frames and publishes
 them over a loopback-only SSE endpoint. DSH Web mirrors active conversation
 text in a pointer-transparent per-grapheme beat layer. Deep Diving and the
 latest active reasoning, tool or context-injection row form one glyph lane.
-Streaming summaries admit a new visible snapshot only on a detected Hit, and
-clipped text never enters the lane. Each glyph compresses, rebounds and lands
+Streaming summaries continuously join the active wave at its current phase;
+they never restart it, and clipped text never enters the lane. Each slower
+wave is allowed to cross most of the row before the next begins. Glyphs compress, rebound and land
 in an audio-seeded, non-repeating chart: left-to-right, right-to-left,
 inside-out, outside-in, up, down, alternating, snake or split.
 Final answers, the page background and brightness remain unchanged.

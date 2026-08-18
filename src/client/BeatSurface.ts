@@ -36,6 +36,14 @@ interface Candidate {
   readonly kind: SurfaceKind
 }
 
+interface WaveCue {
+  readonly pattern: WavePattern
+  readonly energy: number
+  readonly startedAt: number
+  readonly travelMs: number
+  readonly durationMs: number
+}
+
 interface TextRun {
   readonly node: Text
   readonly parent: HTMLElement
@@ -44,6 +52,7 @@ interface TextRun {
 
 const SOUND_THRESHOLD = 0.025
 const SILENCE_HOLD_MS = 700
+const STREAM_REFRESH_INTERVAL_MS = 90
 const MAX_GLYPHS_PER_SURFACE = 96
 const MAX_SEGMENTS_PER_RUN = 180
 const EXCLUDED_TEXT = 'script, style, textarea, input, pre, code, svg, canvas, math, .katex, [aria-hidden="true"]'
@@ -296,11 +305,14 @@ export class BeatSurface {
   private readonly beatDetector = new BeatDetector()
   private disposeStream: (() => void) | undefined
   private refreshFrame: number | undefined
+  private refreshTimer: number | undefined
   private silenceTimer: number | undefined
+  private lastRefreshAt = 0
   private active = false
   private hitIndex = 0
   private phrasePattern: WavePattern = 'left-right'
   private phraseHitsRemaining = 0
+  private currentCue: WaveCue | undefined
 
   constructor() {
     this.overlay.dataset.dshBgmOverlay = ''
@@ -308,12 +320,14 @@ export class BeatSurface {
     this.observer = new MutationObserver((records) => {
       for (const record of records) {
         if (this.overlay.contains(record.target)) continue
+        const touchesSurface = [...this.surfaces.values()]
+          .some(surface => surface.target.contains(record.target))
         const changesActivityTree = record.type === 'attributes'
           || (record.type === 'childList' && (
             [...record.addedNodes].some(nodeHasActivity)
             || [...record.removedNodes].some(nodeHasActivity)
           ))
-        if (changesActivityTree) {
+        if (touchesSurface || changesActivityTree) {
           this.scheduleRefresh()
           return
         }
@@ -326,6 +340,7 @@ export class BeatSurface {
     this.observer.observe(document.body, {
       subtree: true,
       childList: true,
+      characterData: true,
       attributes: true,
       attributeFilter: ['data-state', 'data-chat-flow-kind'],
     })
@@ -337,6 +352,19 @@ export class BeatSurface {
   }
 
   private readonly scheduleRefresh = (): void => {
+    if (!this.active || this.refreshFrame !== undefined || this.refreshTimer !== undefined) return
+    const wait = Math.max(0, STREAM_REFRESH_INTERVAL_MS - (performance.now() - this.lastRefreshAt))
+    if (wait > 0) {
+      this.refreshTimer = window.setTimeout(() => {
+        this.refreshTimer = undefined
+        this.queueRefreshFrame()
+      }, wait)
+      return
+    }
+    this.queueRefreshFrame()
+  }
+
+  private queueRefreshFrame(): void {
     if (!this.active || this.refreshFrame !== undefined) return
     this.refreshFrame = requestAnimationFrame(() => {
       this.refreshFrame = undefined
@@ -365,17 +393,19 @@ export class BeatSurface {
       }, SILENCE_HOLD_MS)
     }
     if (this.active && this.beatDetector.sample(frame, performance.now())) {
+      const now = performance.now()
       if (this.refreshFrame !== undefined) cancelAnimationFrame(this.refreshFrame)
+      if (this.refreshTimer !== undefined) window.clearTimeout(this.refreshTimer)
       this.refreshFrame = undefined
-      // The current visible summary is admitted on the Hit, like notes crossing
-      // a judgement line. Token mutations between Hits never rebuild the lane.
+      this.refreshTimer = undefined
       this.refresh()
-      this.hit(frame)
+      this.hit(frame, now)
     }
   }
 
   private refresh(): void {
     if (!this.active) return
+    this.lastRefreshAt = performance.now()
     const wanted = targetCandidates()
     const wantedElements = new Set(wanted.map(candidate => candidate.target))
     for (const [target, surface] of this.surfaces) {
@@ -436,21 +466,40 @@ export class BeatSurface {
     range.detach()
     for (const parent of masked) parent.dataset.dshBgmMasked = ''
 
-    this.surfaces.set(candidate.target, {
+    const surface: Surface = {
       target: candidate.target,
       kind: candidate.kind,
       glyphs,
       masked,
       signature,
-    })
+    }
+    this.surfaces.set(candidate.target, surface)
     candidate.target.dataset.dshBgmReactive = candidate.kind
+    const cue = this.currentCue
+    const now = performance.now()
+    if (cue !== undefined && now < cue.startedAt + cue.travelMs + cue.durationMs) {
+      this.animateSurfaceWave(surface, cue, now)
+    }
   }
 
-  private hit(frame: RhythmFrame): void {
+  private hit(frame: RhythmFrame, now: number): void {
+    const current = this.currentCue
+    // Let the judgement wave cross most of the row before admitting another
+    // detected beat. Fast songs therefore render at a readable half-time.
+    if (current !== undefined
+      && now < current.startedAt + current.travelMs + current.durationMs * 0.72) return
     const energy = Math.min(1, (frame.bass + frame.mid + frame.treble) / 2.1)
     const pattern = this.wavePattern(frame)
     this.hitIndex += 1
-    for (const surface of this.surfaces.values()) this.animateSurfaceWave(surface, pattern, energy)
+    const cue: WaveCue = {
+      pattern,
+      energy,
+      startedAt: now,
+      travelMs: 440 + energy * 220,
+      durationMs: 460 + energy * 150,
+    }
+    this.currentCue = cue
+    for (const surface of this.surfaces.values()) this.animateSurfaceWave(surface, cue, now)
   }
 
   private wavePattern(frame: RhythmFrame): WavePattern {
@@ -475,9 +524,11 @@ export class BeatSurface {
     return this.phrasePattern
   }
 
-  private animateSurfaceWave(surface: Surface, pattern: WavePattern, energy: number): void {
+  private animateSurfaceWave(surface: Surface, cue: WaveCue, now: number): void {
     const { glyphs } = surface
     if (glyphs.length === 0) return
+    const { pattern, energy, travelMs, durationMs } = cue
+    const elapsed = Math.max(0, now - cue.startedAt)
     let minX = Number.POSITIVE_INFINITY
     let maxX = Number.NEGATIVE_INFINITY
     let minY = Number.POSITIVE_INFINITY
@@ -492,7 +543,6 @@ export class BeatSurface {
     const centerY = (minY + maxY) / 2
     const maxDistance = Math.max(1, Math.hypot(maxX - minX, maxY - minY) / 2)
     const xSpan = Math.max(1, maxX - minX)
-    const travelMs = 180 + energy * 100
     const lift = 5 + energy * 5
 
     for (let index = 0; index < glyphs.length; index += 1) {
@@ -546,6 +596,8 @@ export class BeatSurface {
           break
       }
       for (const animation of glyph.element.getAnimations()) animation.cancel()
+      const localTime = elapsed - progress * travelMs
+      if (localTime >= durationMs) continue
       glyph.element.animate([
         { transform: 'translate3d(0, 0, 0) scale(1)' },
         {
@@ -562,8 +614,8 @@ export class BeatSurface {
         },
         { transform: 'translate3d(0, 0, 0) scale(1)' },
       ], {
-        duration: 310 + energy * 80,
-        delay: progress * travelMs,
+        duration: durationMs,
+        delay: progress * travelMs - elapsed,
         easing: 'cubic-bezier(.18,.82,.28,1)',
       })
     }
@@ -586,6 +638,7 @@ export class BeatSurface {
     this.hitIndex = 0
     this.phrasePattern = 'left-right'
     this.phraseHitsRemaining = 0
+    this.currentCue = undefined
     for (const surface of this.surfaces.values()) this.removeSurface(surface)
     this.surfaces.clear()
   }
@@ -597,8 +650,10 @@ export class BeatSurface {
     document.removeEventListener('scroll', this.scheduleRefresh, true)
     window.removeEventListener('resize', this.scheduleRefresh)
     if (this.refreshFrame !== undefined) cancelAnimationFrame(this.refreshFrame)
+    if (this.refreshTimer !== undefined) window.clearTimeout(this.refreshTimer)
     if (this.silenceTimer !== undefined) window.clearTimeout(this.silenceTimer)
     this.refreshFrame = undefined
+    this.refreshTimer = undefined
     this.silenceTimer = undefined
     this.deactivate()
     this.overlay.remove()
