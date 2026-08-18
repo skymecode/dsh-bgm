@@ -35,7 +35,9 @@ using its selected motion, while
 weak or fallback pulses retain the scan with a small 5–8px glyph bounce.
 Independent
 grade words burst from the judgement point, hit rings expand on successful
-notes, and Combo 5/10/25 unlocks stronger local impacts, gold outlines and gold
+notes, while the struck note compresses then snaps open in 150–190ms. A 45ms
+hitstop pauses only plugin-owned effects—the conversation and page never
+freeze. Combo 5/10/25 unlocks stronger local impacts, gold outlines and gold
 trails. Milestone words appear at 5/10/25/50. Only an expected pulse that
 expires without a nearby detection
 resets Combo.

@@ -516,6 +516,9 @@ export class BeatSurface {
   private noteIndex = 0
   private judgementIndex = 0
   private lastJudgementStrikeAt = 0
+  private lastHitstopAt = 0
+  private hitstopTimer: number | undefined
+  private hitstopAnimations: Animation[] = []
 
   constructor() {
     this.overlay.dataset.dshBgmOverlay = ''
@@ -597,6 +600,7 @@ export class BeatSurface {
     this.noteIndex = 0
     this.judgementIndex = 0
     this.lastJudgementStrikeAt = 0
+    this.clearHitstop()
     for (const animation of this.judgementLine.getAnimations()) animation.cancel()
     this.judgementLine.hidden = true
     this.comboLabel.hidden = true
@@ -962,9 +966,16 @@ export class BeatSurface {
     const scale = 1.42 + confidence * 0.48
     const feedback = note.element.animate([
       { opacity: 1, transform: 'scale(1)', color: 'currentColor' },
-      { opacity: 1, transform: `scale(${scale.toFixed(2)})`, color: impactColor, offset: 0.34 },
-      { opacity: 0, transform: 'scale(.92)', color: impactColor },
-    ], { duration: 360 + confidence * 160, easing: 'cubic-bezier(.16,.84,.3,1)' })
+      { opacity: 1, transform: 'scale(1.05, .86)', color: impactColor, offset: 0.1 },
+      {
+        opacity: 1,
+        transform: `scale(${scale.toFixed(2)}, 1.14)`,
+        color: impactColor,
+        offset: 0.3,
+      },
+      { opacity: 1, transform: 'scale(.94)', color: impactColor, offset: 0.58 },
+      { opacity: 0, transform: 'scale(.9)', color: impactColor },
+    ], { duration: 150 + confidence * 40, easing: 'cubic-bezier(.14,.8,.24,1)' })
     feedback.onfinish = () => note.element.remove()
 
     this.combo += 1
@@ -996,6 +1007,30 @@ export class BeatSurface {
       this.showGrade(milestoneText, '#ffd76a', note.judgeX, note.judgeY - 18)
     }
     this.strikeJudgementLine(confidence)
+    this.triggerHitstop()
+  }
+
+  /** Freeze only the plugin-owned rhythm layer for one short impact frame. */
+  private triggerHitstop(): void {
+    const now = performance.now()
+    if (this.lastHitstopAt > 0 && now - this.lastHitstopAt <= 160) return
+    this.lastHitstopAt = now
+    document.documentElement.dataset.dshBgmHitstop = ''
+    this.hitstopAnimations = this.overlay.getAnimations({ subtree: true })
+      .filter(animation => animation.playState === 'running')
+    for (const animation of this.hitstopAnimations) animation.pause()
+    this.hitstopTimer = window.setTimeout(() => { this.clearHitstop(false) }, 45)
+  }
+
+  private clearHitstop(resetCooldown = true): void {
+    if (this.hitstopTimer !== undefined) window.clearTimeout(this.hitstopTimer)
+    this.hitstopTimer = undefined
+    delete document.documentElement.dataset.dshBgmHitstop
+    for (const animation of this.hitstopAnimations) {
+      if (animation.playState === 'paused') animation.play()
+    }
+    this.hitstopAnimations = []
+    if (resetCooldown) this.lastHitstopAt = 0
   }
 
   private strikeJudgementLine(confidence: number): void {
@@ -1772,6 +1807,7 @@ export class BeatSurface {
     this.noteIndex = 0
     this.judgementIndex = 0
     this.lastJudgementStrikeAt = 0
+    this.clearHitstop()
     this.judgementLine.hidden = true
     this.comboLabel.hidden = true
     this.scoreLabel.hidden = true

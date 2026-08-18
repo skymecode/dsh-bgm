@@ -224,6 +224,19 @@ html[data-dsh-bgm-active] [data-dsh-bgm-reactive='deep-diving'][data-dsh-bgm-mas
   animation: none !important;
 }
 
+/* Hitstop is local to plugin-owned effects; React text and the page keep moving. */
+html[data-dsh-bgm-hitstop] .dsh-bgm-glyph,
+html[data-dsh-bgm-hitstop] .dsh-bgm-note,
+html[data-dsh-bgm-hitstop] .dsh-bgm-hit-ring,
+html[data-dsh-bgm-hitstop] .dsh-bgm-hit-particle,
+html[data-dsh-bgm-hitstop] .dsh-bgm-hit-key,
+html[data-dsh-bgm-hitstop] .dsh-bgm-gold-streak,
+html[data-dsh-bgm-hitstop] .dsh-bgm-flow-ripple,
+html[data-dsh-bgm-hitstop] .dsh-bgm-grade-float,
+html[data-dsh-bgm-hitstop] .dsh-bgm-judgement-line {
+  animation-play-state: paused !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .dsh-bgm-glyph { transform: none !important; }
   .dsh-bgm-note,
