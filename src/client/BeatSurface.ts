@@ -9,6 +9,7 @@ type TriggerOrder = 'together' | 'left-right' | 'right-left' | 'center-out'
 type MotionStyle = 'punch' | 'jump' | 'drop' | 'split' | 'converge'
   | 'zigzag' | 'snake' | 'stair-up' | 'stair-down' | 'fan' | 'orbit'
 type AttackStyle = 'snap' | 'bounce' | 'hold'
+type FlowWaveType = 'valley' | 'peak' | 'sine' | 'saw'
 
 interface ChartStyle {
   readonly order: TriggerOrder
@@ -19,7 +20,7 @@ interface ChartStyle {
 const DOWNBEAT_ORDERS: readonly TriggerOrder[] = ['together', 'center-out', 'edges-in', 'even-odd']
 const DOWNBEAT_MOTIONS: readonly MotionStyle[] = ['punch', 'jump', 'drop', 'split', 'converge']
 const FLOW_ORDERS: readonly TriggerOrder[] = [
-  'left-right', 'right-left', 'center-out', 'edges-in', 'even-odd', 'odd-even', 'shuffle',
+  'left-right', 'right-left', 'center-out', 'edges-in',
 ]
 const FLOW_MOTIONS: readonly MotionStyle[] = [
   'jump', 'drop', 'split', 'converge', 'zigzag', 'snake', 'stair-up', 'stair-down', 'fan', 'orbit',
@@ -90,6 +91,41 @@ function choose<T>(values: readonly T[], seed: number, salt: number): T {
 /** Detector confidence owns the strength tier; chart order never downgrades it. */
 function cueStrength(confidence: number): HitStrength {
   return confidence > 0.7 ? 'strong' : confidence > 0.46 ? 'medium' : 'weak'
+}
+
+/** Reduce the old per-glyph motion vocabulary to four continuous row surfaces. */
+function flowWaveType(motion: MotionStyle): FlowWaveType {
+  switch (motion) {
+    case 'drop':
+    case 'converge': return 'valley'
+    case 'punch':
+    case 'jump':
+    case 'fan': return 'peak'
+    case 'zigzag':
+    case 'snake':
+    case 'orbit': return 'sine'
+    case 'split':
+    case 'stair-up':
+    case 'stair-down': return 'saw'
+  }
+}
+
+function flowWaveHeight(horizontal: number, phase: number, waveType: FlowWaveType): number {
+  switch (waveType) {
+    case 'valley': return (horizontal - 0.5) ** 2 * 4
+    case 'peak': return 1 - (horizontal - 0.5) ** 2 * 4
+    case 'sine': return Math.sin(horizontal * Math.PI * 2 - phase) * 0.5 + 0.5
+    case 'saw': return horizontal
+  }
+}
+
+function flowImpactScaleY(progress: number, strength: HitStrength): number {
+  const compressed = strength === 'strong' ? 0.86 : strength === 'weak' ? 0.96 : 0.91
+  const expanded = strength === 'strong' ? 1.14 : strength === 'weak' ? 1.04 : 1.09
+  if (progress <= 0.1) return 1 + (compressed - 1) * progress / 0.1
+  if (progress <= 0.3) return compressed + (expanded - compressed) * (progress - 0.1) / 0.2
+  if (progress <= 0.58) return expanded + (0.98 - expanded) * (progress - 0.3) / 0.28
+  return 0.98 + 0.02 * (progress - 0.58) / 0.42
 }
 
 function chartStyle(
@@ -1444,11 +1480,11 @@ export class BeatSurface {
 
   private animateSurfaceWave(surface: Surface, cue: WaveCue, now: number): void {
     const { glyphs } = surface
-    if (glyphs.length === 0) return
     if (cue.lane === 'flow') {
       this.animateFlowScan(surface, cue, now)
       return
     }
+    if (glyphs.length === 0) return
 
     const { style, energy, travelMs, durationMs } = cue
     const elapsed = Math.max(0, now - cue.startedAt)
@@ -1575,7 +1611,7 @@ export class BeatSurface {
     }
   }
 
-  /** Flow restores arcade chart modes while every propagation step stays BPM-locked. */
+  /** Flow is one continuous BPM-locked row surface, never independent glyph motion. */
   private animateFlowScan(surface: Surface, cue: WaveCue, now: number): void {
     const periodMs = cue.periodMs
     if (periodMs === undefined) return
@@ -1607,10 +1643,11 @@ export class BeatSurface {
     const lift = (strong
       ? 18 + cue.energy * 6
       : weak ? 5 + cue.energy * 3 : 11 + cue.energy * 4) * comboMultiplier
-    const baseScale = strong ? 1.35 : weak ? 1.12 : 1.24
-    const peakScale = 1 + (baseScale - 1) * comboMultiplier
-    const durationMs = cue.durationMs
-    const rest = 'translate3d(0, 0, 0) scale(1)'
+    const waveType = flowWaveType(cue.style.motion)
+    const reverse = cue.style.order === 'right-left' || cue.style.order === 'edges-in'
+    const waveDurationMs = periodMs
+    if (elapsed >= waveDurationMs) return
+    const frameOffsets = [0, 0.08, 0.18, 0.3, 0.42, 0.55, 0.68, 0.82, 1] as const
     const peakShadow = cue.goldAccent
       ? '0 0 2px #fff7c2, 0 0 9px #ffd76a'
       : strong
@@ -1622,109 +1659,27 @@ export class BeatSurface {
     for (let index = 0; index < glyphs.length; index += 1) {
       const glyph = glyphs[index]
       if (glyph === undefined) continue
-      const horizontal = (glyph.centerX - minX) / xSpan
-      const signedCenter = horizontal * 2 - 1
-      const centerDistance = Math.min(1, Math.abs(signedCenter))
-      let progress: number
-      switch (cue.style.order) {
-        case 'together': progress = 0; break
-        case 'left-right': progress = horizontal; break
-        case 'right-left': progress = 1 - horizontal; break
-        case 'center-out': progress = centerDistance; break
-        case 'edges-in': progress = 1 - centerDistance; break
-        case 'even-odd': progress = (index % 2) * 0.58 + horizontal * 0.42; break
-        case 'odd-even': progress = ((index + 1) % 2) * 0.58 + horizontal * 0.42; break
-        case 'shuffle': progress = hashUnit(cue.seed, index + 17); break
-      }
-
-      const direction = Math.sign(signedCenter) || (index % 2 === 0 ? -1 : 1)
-      const lateral = clamp(3 + lift * 0.32, 4, 11)
-      let peakX = 0
-      let peakY = -lift
-      switch (cue.style.motion) {
-        case 'punch':
-          peakY = -lift * 0.42
-          break
-        case 'jump':
-          peakY = -lift
-          break
-        case 'drop':
-          peakY = lift * 0.78
-          break
-        case 'split':
-          peakX = direction * lateral
-          peakY = -lift * 0.46
-          break
-        case 'converge':
-          peakX = -direction * lateral
-          peakY = -lift * 0.42
-          break
-        case 'zigzag':
-          peakY = index % 2 === 0 ? -lift : lift * 0.72
-          break
-        case 'snake':
-          peakX = Math.cos(horizontal * Math.PI * 2) * lateral * 0.42
-          peakY = Math.sin(horizontal * Math.PI * 2.5) * lift * 0.9
-          break
-        case 'stair-up':
-          peakX = lateral * 0.18
-          peakY = -lift * (0.34 + horizontal * 0.66)
-          break
-        case 'stair-down':
-          peakX = -lateral * 0.16
-          peakY = lift * (0.24 + horizontal * 0.58)
-          break
-        case 'fan':
-          peakX = signedCenter * lateral
-          peakY = -lift * (1 - Math.abs(signedCenter) * 0.35)
-          break
-        case 'orbit': {
-          const angle = horizontal * Math.PI * 2 + hashUnit(cue.seed, 91) * Math.PI
-          peakX = Math.cos(angle) * lateral * 0.72
-          peakY = Math.sin(angle) * lift * 0.82
-          break
-        }
-      }
-
+      const rawHorizontal = clamp((glyph.centerX - minX) / xSpan, 0, 1)
+      const horizontal = reverse ? 1 - rawHorizontal : rawHorizontal
       for (const animation of glyph.element.getAnimations()) animation.cancel()
       glyph.element.style.webkitTextStroke = cue.goldAccent ? '0.35px #ffd76a' : ''
-      const travelMs = stepMs * Math.max(0, glyphs.length - 1)
-      const delay = (strong ? 0 : progress * travelMs) - elapsed
-      if (delay + durationMs <= 0) continue
-      const press = `translate3d(${(-peakX * 0.12).toFixed(2)}px, ${(peakY > 0 ? -1 : 1).toFixed(2)}px, 0) scaleX(1.025) scaleY(.92)`
-      const peak = `translate3d(${peakX.toFixed(2)}px, ${peakY.toFixed(2)}px, 0) scale(${peakScale.toFixed(3)})`
-      const rebound = `translate3d(${(-peakX * 0.14).toFixed(2)}px, ${(-peakY * 0.12).toFixed(2)}px, 0) scaleX(1.03) scaleY(.97)`
-      const halfPeak = `translate3d(${(peakX * 0.36).toFixed(2)}px, ${(peakY * 0.36).toFixed(2)}px, 0) scale(${(1 + (peakScale - 1) * 0.38).toFixed(3)})`
       const restShadow = '0 0 0 transparent'
-      const frames: Keyframe[] = cue.style.attack === 'bounce'
-        ? [
-            { transform: rest, textShadow: restShadow },
-            { transform: press, textShadow: restShadow, offset: 0.045 },
-            { transform: peak, textShadow: peakShadow, offset: 0.28 },
-            { transform: rebound, textShadow: restShadow, offset: 0.56 },
-            { transform: halfPeak, textShadow: peakShadow, offset: 0.78 },
-            { transform: rest, textShadow: restShadow },
-          ]
-        : cue.style.attack === 'hold'
-          ? [
-              { transform: rest, textShadow: restShadow },
-              { transform: press, textShadow: restShadow, offset: 0.045 },
-              { transform: peak, textShadow: peakShadow, offset: 0.27 },
-              { transform: peak, textShadow: peakShadow, offset: 0.56 },
-              { transform: rebound, textShadow: restShadow, offset: 0.8 },
-              { transform: rest, textShadow: restShadow },
-            ]
-          : [
-              { transform: rest, textShadow: restShadow },
-              { transform: press, textShadow: restShadow, offset: 0.045 },
-              { transform: peak, textShadow: peakShadow, offset: 0.3 },
-              { transform: rebound, textShadow: restShadow, offset: 0.64 },
-              { transform: rest, textShadow: restShadow },
-            ]
+      const frames: Keyframe[] = frameOffsets.map((progress) => {
+        const envelope = Math.sin(Math.PI * progress)
+        const phase = progress * Math.PI * 2
+        const height = flowWaveHeight(horizontal, phase, waveType)
+        const peakY = -lift * envelope * height
+        const scaleY = flowImpactScaleY(progress, cue.strength)
+        return {
+          offset: progress,
+          transform: `translate3d(0, ${peakY.toFixed(2)}px, 0) scaleY(${scaleY.toFixed(3)})`,
+          textShadow: envelope > 0.32 ? peakShadow : restShadow,
+        }
+      })
       glyph.element.animate(frames, {
-        duration: durationMs,
-        delay,
-        easing: 'cubic-bezier(.12,.8,.22,1)',
+        duration: waveDurationMs,
+        delay: -elapsed,
+        easing: 'linear',
       })
     }
   }

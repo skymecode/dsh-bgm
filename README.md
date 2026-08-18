@@ -5,15 +5,15 @@ Cross-platform system-audio rhythm status for DSH Web.
 The plugin captures the default system output independently of the player, so
 QQ Music, NetEase Cloud Music, browser playback and other apps use the same
 path. The Host reduces raw PCM to RMS/bass/mid/treble/onset frames and publishes
-them over a loopback-only SSE endpoint. DSH Web mirrors active conversation
-text in a pointer-transparent per-grapheme beat layer. Deep Diving is a
+them over a loopback-only SSE endpoint. Stable activity rows use a
+pointer-transparent per-grapheme surface, while streaming text remains wholly
+React-painted and receives only independent lane effects. Deep Diving is a
 downbeat lane driven by bass/onset, while the latest reasoning, tool or
 context-injection row is an independent flow lane driven by mid/treble change.
-Streaming summaries continuously join the measured flow chart at its current
-phase; they never restart it, and clipped text never enters the lane. Deep
-Diving retains about 60 downbeat combinations. Activity rows restore more than
-200 left/right, up/down, center-out, edges-in, split/converge and attack-style
-combinations, with propagation timing taken from the measured BPM.
+Deep Diving retains about 60 downbeat combinations. Stable activity text is
+one continuous BPM-locked wave surface: valley, peak, travelling sine or saw.
+Every glyph shares one timeline and a smooth position-derived height, so no
+character can detach into an independent trajectory.
 
 The judgement lane stays hidden until two reliable flow intervals establish a
 measured period; there is no hard-coded bootstrap tempo. A glyph then launches
@@ -28,11 +28,10 @@ out-of-window detections silently re-anchor the grid, while melodic fallback
 pulses can settle a nearby note as a reduced-confidence GOOD. The note lane and
 the row wave share one clock while Deep Diving stays on the bass/onset clock.
 Hits build Combo and a seven-digit score with local point
-bursts plus accuracy. Flow chart propagation uses
-`clamp(period / glyphCount, 18ms, 60ms)` per glyph. Medium pulses run the
-selected spatial chart; high-confidence pulses hit the whole row together
-using its selected motion, while
-weak or fallback pulses retain the scan with a small 5–8px glyph bounce.
+bursts plus accuracy. A flow wave completes its phase over the measured
+`period`: high-confidence pulses reach 18–24px, medium pulses 11–15px and weak
+or fallback pulses remain a subtle 5–8px. All glyphs compress and rebound on
+the same frames without horizontal movement or per-character delay.
 Independent
 grade words burst from the judgement point, hit rings expand on successful
 notes, while the struck note compresses then snaps open in 150–190ms. A 45ms
