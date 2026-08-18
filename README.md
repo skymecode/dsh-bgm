@@ -6,13 +6,13 @@ The plugin captures the default system output independently of the player, so
 QQ Music, NetEase Cloud Music, browser playback and other apps use the same
 path. The Host reduces raw PCM to RMS/bass/mid/treble/onset frames and publishes
 them over a loopback-only SSE endpoint. DSH Web mirrors active conversation
-text in a pointer-transparent per-grapheme beat layer. Deep Diving and the
-latest active reasoning, tool or context-injection row form one glyph lane.
-Streaming summaries continuously join the active wave at its current phase;
-they never restart it, and clipped text never enters the lane. Each slower
-wave is allowed to cross most of the row before the next begins. Glyphs compress, rebound and land
-in an audio-seeded, non-repeating chart: left-to-right, right-to-left,
-inside-out, outside-in, up, down, alternating, snake or split.
+text in a pointer-transparent per-grapheme beat layer. Deep Diving is a
+downbeat lane driven by bass/onset, while the latest reasoning, tool or
+context-injection row is an independent flow lane driven by mid/treble change.
+Streaming summaries continuously join their active wave at its current phase;
+they never restart it, and clipped text never enters the lane. Choreography is
+composed from trigger order, motion path and attack feel, yielding about 60
+downbeat combinations and more than 200 non-repeating flow combinations.
 Final answers, the page background and brightness remain unchanged.
 Each hit is a discrete wave rather than continuous line jitter. Screen-reader
 only labels remain accessible and are excluded from the visual mirror. Raw

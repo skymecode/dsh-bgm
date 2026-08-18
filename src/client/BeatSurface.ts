@@ -2,20 +2,28 @@ import type { BgmSnapshot, RhythmFrame } from '../core/types.ts'
 import { subscribeBgm } from './stream.ts'
 
 type SurfaceKind = 'reasoning' | 'tool' | 'context' | 'deep-diving'
-type WavePattern = 'left-right' | 'right-left' | 'inside-out' | 'outside-in'
-  | 'up-wave' | 'down-wave' | 'zigzag' | 'snake' | 'split'
+type CueLane = 'downbeat' | 'flow'
+type TriggerOrder = 'together' | 'left-right' | 'right-left' | 'center-out'
+  | 'edges-in' | 'even-odd' | 'odd-even' | 'shuffle'
+type MotionStyle = 'punch' | 'jump' | 'drop' | 'split' | 'converge'
+  | 'zigzag' | 'snake' | 'stair-up' | 'stair-down' | 'fan' | 'orbit'
+type AttackStyle = 'snap' | 'bounce' | 'hold'
 
-const WAVE_PATTERNS: readonly WavePattern[] = [
-  'left-right',
-  'right-left',
-  'inside-out',
-  'outside-in',
-  'up-wave',
-  'down-wave',
-  'zigzag',
-  'snake',
-  'split',
+interface ChartStyle {
+  readonly order: TriggerOrder
+  readonly motion: MotionStyle
+  readonly attack: AttackStyle
+}
+
+const DOWNBEAT_ORDERS: readonly TriggerOrder[] = ['together', 'center-out', 'edges-in', 'even-odd']
+const DOWNBEAT_MOTIONS: readonly MotionStyle[] = ['punch', 'jump', 'drop', 'split', 'converge']
+const FLOW_ORDERS: readonly TriggerOrder[] = [
+  'left-right', 'right-left', 'center-out', 'edges-in', 'even-odd', 'odd-even', 'shuffle',
 ]
+const FLOW_MOTIONS: readonly MotionStyle[] = [
+  'jump', 'drop', 'split', 'converge', 'zigzag', 'snake', 'stair-up', 'stair-down', 'fan', 'orbit',
+]
+const ATTACKS: readonly AttackStyle[] = ['snap', 'bounce', 'hold']
 
 interface Glyph {
   readonly element: HTMLSpanElement
@@ -37,11 +45,51 @@ interface Candidate {
 }
 
 interface WaveCue {
-  readonly pattern: WavePattern
+  readonly lane: CueLane
+  readonly style: ChartStyle
+  readonly seed: number
   readonly energy: number
   readonly startedAt: number
   readonly travelMs: number
   readonly durationMs: number
+}
+
+function hashUnit(seed: number, salt: number): number {
+  let value = (seed ^ Math.imul(salt + 1, 0x45d9f3b)) | 0
+  value = Math.imul(value ^ (value >>> 16), 0x45d9f3b)
+  value = Math.imul(value ^ (value >>> 16), 0x45d9f3b)
+  return ((value ^ (value >>> 16)) >>> 0) / 0x1_0000_0000
+}
+
+function choose<T>(values: readonly T[], seed: number, salt: number): T {
+  const selected = values[Math.floor(hashUnit(seed, salt) * values.length)]
+  if (selected === undefined) throw new Error('dsh-bgm: empty chart style family')
+  return selected
+}
+
+function chartStyle(
+  lane: CueLane,
+  frame: RhythmFrame,
+  index: number,
+  previousSignature: string,
+): { style: ChartStyle; seed: number; signature: string } {
+  const seed = Math.abs(Math.floor(
+    frame.capturedAt + frame.bass * 997 + frame.mid * 619 + frame.treble * 389 + index * 131,
+  ))
+  const orders = lane === 'downbeat' ? DOWNBEAT_ORDERS : FLOW_ORDERS
+  const motions = lane === 'downbeat' ? DOWNBEAT_MOTIONS : FLOW_MOTIONS
+  let style: ChartStyle = {
+    order: choose(orders, seed, 0),
+    motion: choose(motions, seed, 1),
+    attack: choose(ATTACKS, seed, 2),
+  }
+  let signature = `${style.order}:${style.motion}:${style.attack}`
+  if (signature === previousSignature) {
+    const motionIndex = (motions.indexOf(style.motion) + 1 + index) % motions.length
+    style = { ...style, motion: motions[motionIndex] ?? motions[0] ?? 'jump' }
+    signature = `${style.order}:${style.motion}:${style.attack}`
+  }
+  return { style, seed, signature }
 }
 
 interface TextRun {
@@ -238,6 +286,42 @@ class BeatDetector {
   }
 }
 
+/** Mid/treble change detector for the information-flow lane, independent of kick hits. */
+class FlowDetector {
+  private previousMid = 0
+  private previousTreble = 0
+  private averageFlux = 0
+  private fluxDeviation = 0
+  private lastHitAt = 0
+
+  sample(frame: RhythmFrame, now: number): boolean {
+    const midDelta = Math.abs(frame.mid - this.previousMid)
+    const trebleDelta = Math.abs(frame.treble - this.previousTreble)
+    this.previousMid = frame.mid
+    this.previousTreble = frame.treble
+
+    const flux = midDelta * 0.9 + trebleDelta * 1.25 + frame.onset * 0.16
+    const delta = Math.abs(flux - this.averageFlux)
+    this.averageFlux = this.averageFlux * 0.9 + flux * 0.1
+    this.fluxDeviation = this.fluxDeviation * 0.86 + delta * 0.14
+    const threshold = Math.max(0.052, this.averageFlux + this.fluxDeviation * 0.78)
+    const sinceHit = now - this.lastHitAt
+    const detected = flux >= threshold && sinceHit >= 220
+    const melodicFallback = sinceHit >= 760 && (frame.mid > SOUND_THRESHOLD || frame.treble > SOUND_THRESHOLD)
+    if (!detected && !melodicFallback) return false
+    this.lastHitAt = now
+    return true
+  }
+
+  reset(): void {
+    this.previousMid = 0
+    this.previousTreble = 0
+    this.averageFlux = 0
+    this.fluxDeviation = 0
+    this.lastHitAt = 0
+  }
+}
+
 function latestCandidate(candidates: readonly Candidate[]): Candidate | undefined {
   return [...candidates]
     .filter(candidate => isVisible(candidate.target.getBoundingClientRect()))
@@ -303,16 +387,19 @@ export class BeatSurface {
   private readonly surfaces = new Map<HTMLElement, Surface>()
   private readonly observer: MutationObserver
   private readonly beatDetector = new BeatDetector()
+  private readonly flowDetector = new FlowDetector()
   private disposeStream: (() => void) | undefined
   private refreshFrame: number | undefined
   private refreshTimer: number | undefined
   private silenceTimer: number | undefined
   private lastRefreshAt = 0
   private active = false
-  private hitIndex = 0
-  private phrasePattern: WavePattern = 'left-right'
-  private phraseHitsRemaining = 0
-  private currentCue: WaveCue | undefined
+  private downbeatIndex = 0
+  private flowIndex = 0
+  private lastDownbeatStyle = ''
+  private lastFlowStyle = ''
+  private currentDownbeatCue: WaveCue | undefined
+  private currentFlowCue: WaveCue | undefined
 
   constructor() {
     this.overlay.dataset.dshBgmOverlay = ''
@@ -392,14 +479,18 @@ export class BeatSurface {
         this.deactivate()
       }, SILENCE_HOLD_MS)
     }
-    if (this.active && this.beatDetector.sample(frame, performance.now())) {
+    if (this.active) {
       const now = performance.now()
+      const downbeatHit = this.beatDetector.sample(frame, now)
+      const flowHit = this.flowDetector.sample(frame, now)
+      if (!downbeatHit && !flowHit) return
       if (this.refreshFrame !== undefined) cancelAnimationFrame(this.refreshFrame)
       if (this.refreshTimer !== undefined) window.clearTimeout(this.refreshTimer)
       this.refreshFrame = undefined
       this.refreshTimer = undefined
       this.refresh()
-      this.hit(frame, now)
+      if (downbeatHit) this.startCue('downbeat', frame, now)
+      if (flowHit) this.startCue('flow', frame, now)
     }
   }
 
@@ -475,59 +566,64 @@ export class BeatSurface {
     }
     this.surfaces.set(candidate.target, surface)
     candidate.target.dataset.dshBgmReactive = candidate.kind
-    const cue = this.currentCue
+    const cue = surface.kind === 'deep-diving' ? this.currentDownbeatCue : this.currentFlowCue
     const now = performance.now()
     if (cue !== undefined && now < cue.startedAt + cue.travelMs + cue.durationMs) {
       this.animateSurfaceWave(surface, cue, now)
     }
   }
 
-  private hit(frame: RhythmFrame, now: number): void {
-    const current = this.currentCue
-    // Let the judgement wave cross most of the row before admitting another
-    // detected beat. Fast songs therefore render at a readable half-time.
+  private startCue(lane: CueLane, frame: RhythmFrame, now: number): void {
+    const current = lane === 'downbeat' ? this.currentDownbeatCue : this.currentFlowCue
+    const settleRatio = lane === 'downbeat' ? 0.5 : 0.7
     if (current !== undefined
-      && now < current.startedAt + current.travelMs + current.durationMs * 0.72) return
-    const energy = Math.min(1, (frame.bass + frame.mid + frame.treble) / 2.1)
-    const pattern = this.wavePattern(frame)
-    this.hitIndex += 1
-    const cue: WaveCue = {
-      pattern,
-      energy,
-      startedAt: now,
-      travelMs: 440 + energy * 220,
-      durationMs: 460 + energy * 150,
-    }
-    this.currentCue = cue
-    for (const surface of this.surfaces.values()) this.animateSurfaceWave(surface, cue, now)
-  }
+      && now < current.startedAt + current.travelMs + current.durationMs * settleRatio) return
 
-  private wavePattern(frame: RhythmFrame): WavePattern {
-    if (this.phraseHitsRemaining <= 0) {
-      // Audio-seeded shuffle: varied like a rhythm-game chart, but never picks
-      // the same movement twice in succession.
-      const audioSeed = Math.abs(Math.floor(
-        frame.capturedAt
-        + frame.bass * 997
-        + frame.mid * 619
-        + frame.treble * 389
-        + this.hitIndex * 131,
-      ))
-      let next = WAVE_PATTERNS[audioSeed % WAVE_PATTERNS.length] ?? 'left-right'
-      if (next === this.phrasePattern) {
-        next = WAVE_PATTERNS[(audioSeed + 1 + this.hitIndex) % WAVE_PATTERNS.length] ?? 'right-left'
-      }
-      this.phrasePattern = next
-      this.phraseHitsRemaining = frame.onset > 0.45 ? 1 : 2
+    const index = lane === 'downbeat' ? this.downbeatIndex : this.flowIndex
+    const previous = lane === 'downbeat' ? this.lastDownbeatStyle : this.lastFlowStyle
+    const chart = chartStyle(lane, frame, index, previous)
+    const energy = lane === 'downbeat'
+      ? Math.min(1, frame.bass * 0.72 + frame.onset * 0.42 + frame.rms * 0.18)
+      : Math.min(1, frame.mid * 0.55 + frame.treble * 0.65 + frame.onset * 0.18)
+    const cue: WaveCue = lane === 'downbeat'
+      ? {
+          lane,
+          style: chart.style,
+          seed: chart.seed,
+          energy,
+          startedAt: now,
+          travelMs: 90 + energy * 150,
+          durationMs: 390 + energy * 140,
+        }
+      : {
+          lane,
+          style: chart.style,
+          seed: chart.seed,
+          energy,
+          startedAt: now,
+          travelMs: 620 + energy * 300,
+          durationMs: 600 + energy * 180,
+        }
+
+    if (lane === 'downbeat') {
+      this.downbeatIndex += 1
+      this.lastDownbeatStyle = chart.signature
+      this.currentDownbeatCue = cue
+    } else {
+      this.flowIndex += 1
+      this.lastFlowStyle = chart.signature
+      this.currentFlowCue = cue
     }
-    this.phraseHitsRemaining -= 1
-    return this.phrasePattern
+    for (const surface of this.surfaces.values()) {
+      const surfaceLane: CueLane = surface.kind === 'deep-diving' ? 'downbeat' : 'flow'
+      if (surfaceLane === lane) this.animateSurfaceWave(surface, cue, now)
+    }
   }
 
   private animateSurfaceWave(surface: Surface, cue: WaveCue, now: number): void {
     const { glyphs } = surface
     if (glyphs.length === 0) return
-    const { pattern, energy, travelMs, durationMs } = cue
+    const { style, energy, travelMs, durationMs } = cue
     const elapsed = Math.max(0, now - cue.startedAt)
     let minX = Number.POSITIVE_INFINITY
     let maxX = Number.NEGATIVE_INFINITY
@@ -543,7 +639,7 @@ export class BeatSurface {
     const centerY = (minY + maxY) / 2
     const maxDistance = Math.max(1, Math.hypot(maxX - minX, maxY - minY) / 2)
     const xSpan = Math.max(1, maxX - minX)
-    const lift = 5 + energy * 5
+    const lift = cue.lane === 'downbeat' ? 4 + energy * 5 : 5 + energy * 5
 
     for (let index = 0; index < glyphs.length; index += 1) {
       const glyph = glyphs[index]
@@ -551,69 +647,100 @@ export class BeatSurface {
       const distance = Math.min(1, Math.hypot(glyph.centerX - centerX, glyph.centerY - centerY) / maxDistance)
       const horizontal = (glyph.centerX - minX) / xSpan
       const signedCenter = horizontal * 2 - 1
-      let progress = horizontal
+      let progress: number
+      switch (style.order) {
+        case 'together': progress = 0; break
+        case 'right-left': progress = 1 - horizontal; break
+        case 'center-out': progress = distance; break
+        case 'edges-in': progress = 1 - distance; break
+        case 'even-odd': progress = (index % 2) * 0.58 + horizontal * 0.42; break
+        case 'odd-even': progress = ((index + 1) % 2) * 0.58 + horizontal * 0.42; break
+        case 'shuffle': progress = hashUnit(cue.seed, index + 17); break
+        case 'left-right': progress = horizontal; break
+      }
+
       let peakX = 0
       let peakY = -lift
-      switch (pattern) {
-        case 'right-left':
-          progress = 1 - horizontal
-          peakX = -2.4
+      let peakScale = 1.07 + energy * 0.055
+      switch (style.motion) {
+        case 'punch':
+          peakY = -lift * 0.35
+          peakScale = 1.14 + energy * 0.08
           break
-        case 'inside-out':
-          progress = distance
-          peakX = Math.sign(signedCenter) * (2.5 + energy * 2)
-          peakY = -lift * 0.78
-          break
-        case 'outside-in':
-          progress = 1 - distance
-          peakX = -Math.sign(signedCenter) * (2.5 + energy * 2)
-          peakY = -lift * 0.72
-          break
-        case 'up-wave':
-          progress = horizontal
+        case 'jump':
           peakY = -lift
           break
-        case 'down-wave':
-          progress = 1 - horizontal
+        case 'drop':
           peakY = lift * 0.78
           break
-        case 'zigzag':
-          progress = horizontal
-          peakY = index % 2 === 0 ? -lift : lift * 0.7
-          break
-        case 'snake':
-          progress = horizontal
-          peakY = Math.sin(horizontal * Math.PI * 2.5) * lift * 0.9
-          peakX = Math.cos(horizontal * Math.PI * 2) * 1.8
-          break
         case 'split':
-          progress = distance
           peakX = Math.sign(signedCenter) * (3.5 + energy * 2.5)
           peakY = -lift * 0.55
           break
-        case 'left-right':
-          peakX = 2.4
+        case 'converge':
+          peakX = -Math.sign(signedCenter) * (3.5 + energy * 2.5)
+          peakY = -lift * 0.5
           break
+        case 'zigzag':
+          peakY = index % 2 === 0 ? -lift : lift * 0.7
+          break
+        case 'snake':
+          peakY = Math.sin(horizontal * Math.PI * 2.5) * lift * 0.9
+          peakX = Math.cos(horizontal * Math.PI * 2) * 1.8
+          break
+        case 'stair-up':
+          peakY = -lift * (0.35 + horizontal * 0.65)
+          peakX = 1.4
+          break
+        case 'stair-down':
+          peakY = lift * (0.25 + horizontal * 0.55)
+          peakX = -1.2
+          break
+        case 'fan':
+          peakX = signedCenter * (3 + energy * 3)
+          peakY = -lift * (1 - Math.abs(signedCenter) * 0.35)
+          break
+        case 'orbit': {
+          const angle = horizontal * Math.PI * 2 + hashUnit(cue.seed, 91) * Math.PI
+          peakX = Math.cos(angle) * (2.5 + energy * 2)
+          peakY = Math.sin(angle) * lift * 0.78
+          break
+        }
       }
       for (const animation of glyph.element.getAnimations()) animation.cancel()
       const localTime = elapsed - progress * travelMs
       if (localTime >= durationMs) continue
-      glyph.element.animate([
-        { transform: 'translate3d(0, 0, 0) scale(1)' },
-        {
-          transform: `translate3d(${(-peakX * 0.2).toFixed(2)}px, ${(peakY > 0 ? -1.2 : 1.5).toFixed(2)}px, 0) scaleX(1.045) scaleY(.9)`,
-          offset: 0.18,
-        },
-        {
-          transform: `translate3d(${peakX.toFixed(2)}px, ${peakY.toFixed(2)}px, 0) scale(${(1.08 + energy * 0.06).toFixed(3)})`,
-          offset: 0.46,
-        },
-        {
-          transform: `translate3d(${(-peakX * 0.12).toFixed(2)}px, ${(-peakY * 0.1).toFixed(2)}px, 0) scaleX(1.02) scaleY(.97)`,
-          offset: 0.78,
-        },
-        { transform: 'translate3d(0, 0, 0) scale(1)' },
-      ], {
+      const rest = 'translate3d(0, 0, 0) scale(1)'
+      const press = `translate3d(${(-peakX * 0.18).toFixed(2)}px, ${(peakY > 0 ? -1.1 : 1.4).toFixed(2)}px, 0) scaleX(1.045) scaleY(.9)`
+      const peak = `translate3d(${peakX.toFixed(2)}px, ${peakY.toFixed(2)}px, 0) scale(${peakScale.toFixed(3)})`
+      const rebound = `translate3d(${(-peakX * 0.16).toFixed(2)}px, ${(-peakY * 0.14).toFixed(2)}px, 0) scaleX(1.025) scaleY(.965)`
+      const halfPeak = `translate3d(${(peakX * 0.38).toFixed(2)}px, ${(peakY * 0.38).toFixed(2)}px, 0) scale(${(1 + (peakScale - 1) * 0.42).toFixed(3)})`
+      const frames: Keyframe[] = style.attack === 'bounce'
+        ? [
+            { transform: rest },
+            { transform: press, offset: 0.12 },
+            { transform: peak, offset: 0.34 },
+            { transform: rebound, offset: 0.62 },
+            { transform: halfPeak, offset: 0.8 },
+            { transform: rest },
+          ]
+        : style.attack === 'hold'
+          ? [
+              { transform: rest },
+              { transform: press, offset: 0.14 },
+              { transform: peak, offset: 0.34 },
+              { transform: peak, offset: 0.6 },
+              { transform: rebound, offset: 0.82 },
+              { transform: rest },
+            ]
+          : [
+              { transform: rest },
+              { transform: press, offset: 0.16 },
+              { transform: peak, offset: 0.4 },
+              { transform: rebound, offset: 0.7 },
+              { transform: rest },
+            ]
+      glyph.element.animate(frames, {
         duration: durationMs,
         delay: progress * travelMs - elapsed,
         easing: 'cubic-bezier(.18,.82,.28,1)',
@@ -635,10 +762,13 @@ export class BeatSurface {
     this.active = false
     delete document.documentElement.dataset.dshBgmActive
     this.beatDetector.reset()
-    this.hitIndex = 0
-    this.phrasePattern = 'left-right'
-    this.phraseHitsRemaining = 0
-    this.currentCue = undefined
+    this.flowDetector.reset()
+    this.downbeatIndex = 0
+    this.flowIndex = 0
+    this.lastDownbeatStyle = ''
+    this.lastFlowStyle = ''
+    this.currentDownbeatCue = undefined
+    this.currentFlowCue = undefined
     for (const surface of this.surfaces.values()) this.removeSurface(surface)
     this.surfaces.clear()
   }
