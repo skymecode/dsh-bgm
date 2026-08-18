@@ -25,8 +25,9 @@ the row wave share one clock while Deep Diving stays on the bass/onset clock.
 Hits build Combo and a seven-digit score with local point
 bursts plus accuracy. Flow advances from the row tail one glyph at a time at
 `clamp(period / glyphCount, 18ms, 60ms)`. Medium pulses light and lift each
-glyph in sequence; high-confidence accented pulses hit the whole row together,
-while weak or fallback pulses move only a subtle row-local tracer. Independent
+glyph in sequence; high-confidence pulses hit the whole row together, while
+weak or fallback pulses retain the scan with a small 5–8px glyph bounce.
+Independent
 grade words burst from the judgement point, hit rings expand on successful
 notes, and Combo 5/10/25 unlocks stronger local impacts, gold outlines and gold
 trails. Milestone words appear at 5/10/25/50. Only an expected pulse that

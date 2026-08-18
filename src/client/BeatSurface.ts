@@ -85,15 +85,9 @@ function choose<T>(values: readonly T[], seed: number, salt: number): T {
   return selected
 }
 
-/** Keep repeated high-confidence pulses from looking mechanically identical. */
-function cueStrength(confidence: number, index: number): HitStrength {
-  const measured: HitStrength = confidence > 0.7
-    ? 'strong'
-    : confidence > 0.46 ? 'medium' : 'weak'
-  if (index % 2 === 0) return measured
-  if (measured === 'strong') return 'medium'
-  if (measured === 'medium') return 'weak'
-  return measured
+/** Detector confidence owns the strength tier; chart order never downgrades it. */
+function cueStrength(confidence: number): HitStrength {
+  return confidence > 0.7 ? 'strong' : confidence > 0.46 ? 'medium' : 'weak'
 }
 
 function chartStyle(
@@ -1259,7 +1253,7 @@ export class BeatSurface {
           seed: chart.seed,
           energy,
           confidence,
-          strength: cueStrength(confidence, index),
+          strength: cueStrength(confidence),
           sampleKind,
           comboBoost: this.combo >= 5,
           goldAccent: this.combo >= 10,
@@ -1275,7 +1269,7 @@ export class BeatSurface {
           seed: chart.seed,
           energy,
           confidence,
-          strength: cueStrength(confidence, index),
+          strength: cueStrength(confidence),
           sampleKind,
           comboBoost: this.combo >= 5,
           goldAccent: this.combo >= 10,
@@ -1448,8 +1442,10 @@ export class BeatSurface {
     if (strong && elapsed < 50) this.strikeJudgementLine(cue.confidence)
 
     const comboMultiplier = cue.comboBoost ? 1.1 : 1
-    const lift = (strong ? 18 + cue.energy * 6 : 10 + cue.energy * 4) * comboMultiplier
-    const baseScale = strong ? 1.35 : 1.3
+    const lift = (strong
+      ? 18 + cue.energy * 6
+      : weak ? 5 + cue.energy * 3 : 11 + cue.energy * 4) * comboMultiplier
+    const baseScale = strong ? 1.35 : weak ? 1.12 : 1.24
     const peakScale = 1 + (baseScale - 1) * comboMultiplier
     const durationMs = cue.durationMs
     const rest = 'translate3d(0, 0, 0) scale(1)'
@@ -1457,14 +1453,15 @@ export class BeatSurface {
       ? '0 0 2px #fff7c2, 0 0 9px #ffd76a'
       : strong
         ? `0 ${(8 + cue.energy * 5).toFixed(1)}px 3px color-mix(in srgb, currentColor 38%, transparent), 0 0 8px color-mix(in srgb, currentColor 55%, transparent)`
-        : '0 0 7px color-mix(in srgb, currentColor 58%, white)'
+        : weak
+          ? '0 0 3px color-mix(in srgb, currentColor 30%, white)'
+          : '0 0 7px color-mix(in srgb, currentColor 58%, white)'
 
     for (let index = 0; index < glyphs.length; index += 1) {
       const glyph = glyphs[index]
       if (glyph === undefined) continue
       for (const animation of glyph.element.getAnimations()) animation.cancel()
       glyph.element.style.webkitTextStroke = cue.goldAccent ? '0.35px #ffd76a' : ''
-      if (weak) continue
       const delay = (strong ? 0 : index * stepMs) - elapsed
       if (delay + durationMs <= 0) continue
       const press = 'translate3d(0, 1px, 0) scaleX(1.025) scaleY(.92)'
@@ -1484,7 +1481,7 @@ export class BeatSurface {
     }
   }
 
-  /** Weak beats remain readable: a row-local tracer advances without moving glyphs. */
+  /** Weak beats keep a subtle tracer behind their small glyph bounce. */
   private showFlowRipple(surface: Surface, cue: WaveCue, now: number, stepMs: number): void {
     if (cue.flowTracerShown) return
     cue.flowTracerShown = true
