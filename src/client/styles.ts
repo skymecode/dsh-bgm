@@ -26,20 +26,6 @@ const stylesheet = `
     0 0 10px color-mix(in srgb, currentColor 58%, transparent);
 }
 
-.dsh-bgm-background-pulse {
-  position: fixed;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  opacity: 0;
-  background: radial-gradient(
-    ellipse at 50% 56%,
-    color-mix(in srgb, var(--dsw-static-deepseek-300, #a9c8ff) 72%, transparent),
-    transparent 68%
-  );
-  will-change: opacity;
-}
-
 .dsh-bgm-judgement-line {
   position: fixed;
   z-index: 2147483001;
@@ -94,6 +80,41 @@ const stylesheet = `
   border-radius: 50%;
   background: transparent;
   box-shadow: 0 0 8px currentColor, inset 0 0 5px currentColor;
+  will-change: transform, opacity;
+}
+
+.dsh-bgm-hit-key {
+  position: fixed;
+  z-index: 2147483002;
+  width: 30px;
+  pointer-events: none;
+  border-radius: 2px 8px 8px 2px;
+  background: linear-gradient(90deg, currentColor, transparent 86%);
+  transform-origin: 0 50%;
+  will-change: transform, opacity;
+}
+
+.dsh-bgm-gold-streak {
+  position: fixed;
+  z-index: 2147483003;
+  width: 52px;
+  height: 2px;
+  pointer-events: none;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #fff7c2, #ffd76a 38%, transparent);
+  box-shadow: 0 0 5px #ffd76a, 0 0 11px color-mix(in srgb, #ffd76a 72%, transparent);
+  transform-origin: 0 50%;
+  will-change: transform, opacity;
+}
+
+.dsh-bgm-flow-ripple {
+  position: fixed;
+  z-index: 2147483001;
+  width: 12px;
+  pointer-events: none;
+  border-radius: 50%;
+  background: linear-gradient(90deg, transparent, currentColor, transparent);
+  filter: blur(.4px);
   will-change: transform, opacity;
 }
 
@@ -155,9 +176,11 @@ html[data-dsh-bgm-active] [data-dsh-bgm-reactive='deep-diving'][data-dsh-bgm-mas
 
 @media (prefers-reduced-motion: reduce) {
   .dsh-bgm-glyph { transform: none !important; }
-  .dsh-bgm-background-pulse,
   .dsh-bgm-note,
   .dsh-bgm-hit-ring,
+  .dsh-bgm-hit-key,
+  .dsh-bgm-gold-streak,
+  .dsh-bgm-flow-ripple,
   .dsh-bgm-judgement-line,
   .dsh-bgm-combo,
   .dsh-bgm-grade-float,

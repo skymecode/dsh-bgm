@@ -3,6 +3,7 @@ import { subscribeBgm } from './stream.ts'
 
 type SurfaceKind = 'reasoning' | 'tool' | 'context' | 'deep-diving'
 type CueLane = 'downbeat' | 'flow'
+type HitStrength = 'weak' | 'medium' | 'strong'
 type TriggerOrder = 'together' | 'left-right' | 'right-left' | 'center-out'
   | 'edges-in' | 'even-odd' | 'odd-even' | 'shuffle'
 type MotionStyle = 'punch' | 'jump' | 'drop' | 'split' | 'converge'
@@ -49,9 +50,16 @@ interface WaveCue {
   readonly style: ChartStyle
   readonly seed: number
   readonly energy: number
+  readonly confidence: number
+  readonly strength: HitStrength
+  readonly sampleKind: BeatSample['kind']
+  readonly comboBoost: boolean
+  readonly goldAccent: boolean
+  readonly periodMs: number | undefined
   readonly startedAt: number
   readonly travelMs: number
   readonly durationMs: number
+  flowTracerShown: boolean
 }
 
 interface PredictedNote {
@@ -75,6 +83,17 @@ function choose<T>(values: readonly T[], seed: number, salt: number): T {
   const selected = values[Math.floor(hashUnit(seed, salt) * values.length)]
   if (selected === undefined) throw new Error('dsh-bgm: empty chart style family')
   return selected
+}
+
+/** Keep repeated high-confidence pulses from looking mechanically identical. */
+function cueStrength(confidence: number, index: number): HitStrength {
+  const measured: HitStrength = confidence > 0.7
+    ? 'strong'
+    : confidence > 0.46 ? 'medium' : 'weak'
+  if (index % 2 === 0) return measured
+  if (measured === 'strong') return 'medium'
+  if (measured === 'medium') return 'weak'
+  return measured
 }
 
 function chartStyle(
@@ -456,7 +475,6 @@ function nodeHasFinalStreamMarker(node: Node): boolean {
  */
 export class BeatSurface {
   private readonly overlay = document.createElement('div')
-  private readonly backgroundPulse = document.createElement('div')
   private readonly judgementLine = document.createElement('div')
   private readonly comboLabel = document.createElement('div')
   private readonly scoreLabel = document.createElement('div')
@@ -491,11 +509,11 @@ export class BeatSurface {
   private accuracyPoints = 0
   private noteIndex = 0
   private judgementIndex = 0
+  private lastJudgementStrikeAt = 0
 
   constructor() {
     this.overlay.dataset.dshBgmOverlay = ''
     this.overlay.setAttribute('aria-hidden', 'true')
-    this.backgroundPulse.className = 'dsh-bgm-background-pulse'
     this.judgementLine.className = 'dsh-bgm-judgement-line'
     this.comboLabel.className = 'dsh-bgm-combo'
     this.scoreLabel.className = 'dsh-bgm-score'
@@ -509,7 +527,6 @@ export class BeatSurface {
     this.scoreLabel.textContent = 'SCORE 0000000'
     this.accuracyLabel.textContent = 'ACC 100.00%'
     this.overlay.append(
-      this.backgroundPulse,
       this.judgementLine,
       this.comboLabel,
       this.scoreLabel,
@@ -573,7 +590,7 @@ export class BeatSurface {
     this.accuracyPoints = 0
     this.noteIndex = 0
     this.judgementIndex = 0
-    for (const animation of this.backgroundPulse.getAnimations()) animation.cancel()
+    this.lastJudgementStrikeAt = 0
     for (const animation of this.judgementLine.getAnimations()) animation.cancel()
     this.judgementLine.hidden = true
     this.comboLabel.hidden = true
@@ -584,6 +601,9 @@ export class BeatSurface {
     this.accuracyLabel.textContent = 'ACC 100.00%'
     for (const grade of this.overlay.querySelectorAll('.dsh-bgm-grade-float')) grade.remove()
     for (const ring of this.overlay.querySelectorAll('.dsh-bgm-hit-ring')) ring.remove()
+    for (const key of this.overlay.querySelectorAll('.dsh-bgm-hit-key')) key.remove()
+    for (const streak of this.overlay.querySelectorAll('.dsh-bgm-gold-streak')) streak.remove()
+    for (const ripple of this.overlay.querySelectorAll('.dsh-bgm-flow-ripple')) ripple.remove()
     for (const surface of this.surfaces.values()) this.removeSurface(surface)
     this.surfaces.clear()
   }
@@ -666,9 +686,6 @@ export class BeatSurface {
       const downbeatSample = this.beatDetector.sample(frame, now)
       const flowSample = this.flowDetector.sample(frame, now)
       if (this.finalOutputStreaming) return
-      if (downbeatSample?.kind === 'detected' && this.surfaces.size > 0) {
-        this.pulseBackground(downbeatSample.confidence)
-      }
       this.updatePrediction(now, flowSample)
       if (downbeatSample === undefined && flowSample === undefined) return
       if (this.refreshFrame !== undefined) cancelAnimationFrame(this.refreshFrame)
@@ -676,19 +693,13 @@ export class BeatSurface {
       this.refreshFrame = undefined
       this.refreshTimer = undefined
       this.refresh()
-      if (downbeatSample !== undefined) this.startCue('downbeat', frame, now)
-      if (flowSample !== undefined) this.startCue('flow', frame, now)
+      if (downbeatSample !== undefined) {
+        this.startCue('downbeat', frame, now, false, downbeatSample.confidence, downbeatSample.kind)
+      }
+      if (flowSample !== undefined) {
+        this.startCue('flow', frame, now, false, flowSample.confidence, flowSample.kind)
+      }
     }
-  }
-
-  private pulseBackground(confidence: number): void {
-    for (const animation of this.backgroundPulse.getAnimations()) animation.cancel()
-    const peakOpacity = 0.022 + confidence * 0.018
-    this.backgroundPulse.animate([
-      { opacity: 0 },
-      { opacity: peakOpacity, offset: 0.28 },
-      { opacity: 0 },
-    ], { duration: 260, easing: 'ease-out' })
   }
 
   private refresh(): void {
@@ -927,19 +938,48 @@ export class BeatSurface {
     this.recordAccuracy(grade === 'PERFECT' ? 1 : grade === 'GREAT' ? 0.82 : 0.55)
     this.showGrade(grade, gradeColor, note.judgeX, note.judgeY + 2)
     this.showHitRing(note.judgeX, note.judgeY + 2, confidence)
+    const surfaceRect = this.judgementSurface()?.target.getBoundingClientRect()
+    this.showKeyStrike(note.judgeX, note.judgeY, surfaceRect?.height ?? 28, confidence)
+    if (this.combo >= 25) this.showGoldStreak(note.judgeX, note.judgeY)
     this.showScoreGain(gainedPoints, gradeColor)
     this.comboLabel.hidden = this.combo < 2
     this.comboLabel.textContent = `${this.combo} COMBO`
-    const comboMilestone = this.combo === 10 || this.combo === 25 || this.combo === 50
-    if (comboMilestone) this.showGrade('FULL COMBO!', '#ffd76a', note.judgeX, note.judgeY - 18)
-    const glow = 5 + confidence * 13
-    const flashColor = comboMilestone ? '#ffd76a' : '#fff'
+    this.comboLabel.style.color = this.combo >= 10 ? '#ffd76a' : ''
+    const milestoneText = this.combo === 5
+      ? 'FEVER ×5'
+      : this.combo === 10
+        ? 'GOLD MODE!'
+        : this.combo === 25
+          ? 'GOLD TRAIL!'
+          : this.combo === 50 ? 'FULL COMBO!' : undefined
+    if (milestoneText !== undefined) {
+      this.showGrade(milestoneText, '#ffd76a', note.judgeX, note.judgeY - 18)
+    }
+    this.strikeJudgementLine(confidence)
+  }
+
+  private strikeJudgementLine(confidence: number): void {
+    if (this.judgementLine.hidden) return
+    const now = performance.now()
+    if (now - this.lastJudgementStrikeAt < 40) return
+    this.lastJudgementStrikeAt = now
+    const comboGlow = this.combo >= 5 ? 1.9 : 1
+    const glow = (7 + confidence * 13) * comboGlow
+    const flashColor = this.combo >= 10 ? '#ffd76a' : '#fff'
     for (const animation of this.judgementLine.getAnimations()) animation.cancel()
     this.judgementLine.animate([
-      { opacity: 0.65, transform: 'scaleX(1)', boxShadow: '0 0 0 transparent' },
-      { opacity: 1, transform: `scaleX(${(1.8 + confidence).toFixed(2)})`, boxShadow: `0 0 ${glow.toFixed(1)}px ${flashColor}`, background: flashColor },
-      { opacity: 0.65, transform: 'scaleX(1)', boxShadow: '0 0 0 transparent' },
-    ], { duration: comboMilestone ? 620 : 300 + confidence * 160, easing: 'ease-out' })
+      { opacity: 0.65, transform: 'scaleX(1) scaleY(1)', boxShadow: '0 0 0 transparent' },
+      {
+        opacity: 1,
+        transform: `scaleX(${(2.1 + confidence * 0.5).toFixed(2)}) scaleY(1.3)`,
+        boxShadow: `0 0 ${glow.toFixed(1)}px ${flashColor}`,
+        background: flashColor,
+        offset: 0.06,
+      },
+      { opacity: 0.82, transform: 'scaleX(.94) scaleY(.96)', boxShadow: `0 0 ${(glow * 0.4).toFixed(1)}px ${flashColor}`, offset: 0.38 },
+      { opacity: 0.72, transform: 'scaleX(1.1) scaleY(1.04)', boxShadow: '0 0 3px currentColor', offset: 0.68 },
+      { opacity: 0.65, transform: 'scaleX(1) scaleY(1)', boxShadow: '0 0 0 transparent' },
+    ], { duration: 140, easing: 'cubic-bezier(.12,.78,.22,1)' })
   }
 
   private resolveMiss(showFeedback: boolean): void {
@@ -958,6 +998,8 @@ export class BeatSurface {
     }
     this.combo = 0
     this.comboLabel.hidden = true
+    this.comboLabel.style.color = ''
+    this.clearComboAccents()
     if (showFeedback) {
       this.recordAccuracy(0)
       this.flashMissLine()
@@ -997,18 +1039,61 @@ export class BeatSurface {
     ring.className = 'dsh-bgm-hit-ring'
     ring.style.left = `${x}px`
     ring.style.top = `${y}px`
-    ring.style.color = confidence >= 0.74 ? '#fff' : confidence >= 0.5 ? '#8fd7ff' : '#9cf2c5'
-    const size = confidence >= 0.74 ? 24 : 20
+    const comboBoost = this.combo >= 5
+    const goldAccent = this.combo >= 10
+    ring.style.color = goldAccent
+      ? '#ffd76a'
+      : confidence >= 0.74 ? '#fff' : confidence >= 0.5 ? '#8fd7ff' : '#9cf2c5'
+    const size = (confidence >= 0.74 ? 24 : 20) + (comboBoost ? 4 : 0)
     ring.style.width = `${size}px`
     ring.style.height = `${size}px`
     this.overlay.append(ring)
-    const scale = confidence >= 0.74 ? 2.65 : 2.2
+    const scale = (confidence >= 0.74 ? 2.65 : 2.2) + (comboBoost ? 0.35 : 0)
     const animation = ring.animate([
-      { opacity: 0.9, transform: 'translate(-50%, -50%) scale(.5)' },
+      { opacity: comboBoost ? 1 : 0.9, transform: 'translate(-50%, -50%) scale(.5)' },
       { opacity: 0.58, offset: 0.35 },
       { opacity: 0, transform: `translate(-50%, -50%) scale(${scale})` },
     ], { duration: confidence >= 0.74 ? 460 : 400, easing: 'cubic-bezier(.12,.7,.22,1)' })
     animation.onfinish = () => ring.remove()
+  }
+
+  /** A tiny local keycap at the judge point: hard press in 8ms, then rebound. */
+  private showKeyStrike(x: number, y: number, rowHeight: number, confidence: number): void {
+    const key = document.createElement('span')
+    key.className = 'dsh-bgm-hit-key'
+    key.style.left = `${x}px`
+    key.style.top = `${y}px`
+    key.style.height = `${clamp(rowHeight + 8, 24, 52)}px`
+    key.style.color = this.combo >= 10 ? '#ffd76a' : '#fff'
+    this.overlay.append(key)
+    const peakOpacity = clamp(0.3 + confidence * 0.28 + (this.combo >= 5 ? 0.12 : 0), 0, 0.72)
+    const animation = key.animate([
+      { opacity: 0, transform: 'translateY(-50%) scaleX(.35) scaleY(1)' },
+      { opacity: peakOpacity, transform: 'translateY(calc(-50% + 1px)) scaleX(1) scaleY(.88)', offset: 0.06 },
+      { opacity: peakOpacity * 0.72, transform: 'translateY(calc(-50% - 1px)) scaleX(.86) scaleY(1.12)', offset: 0.36 },
+      { opacity: 0, transform: 'translateY(-50%) scaleX(.45) scaleY(1)' },
+    ], { duration: 140, easing: 'cubic-bezier(.12,.76,.2,1)' })
+    animation.onfinish = () => key.remove()
+  }
+
+  private showGoldStreak(x: number, y: number): void {
+    const streak = document.createElement('span')
+    streak.className = 'dsh-bgm-gold-streak'
+    streak.style.left = `${x}px`
+    streak.style.top = `${y}px`
+    this.overlay.append(streak)
+    const animation = streak.animate([
+      { opacity: 0, transform: 'translateY(-50%) scaleX(.12)' },
+      { opacity: 1, transform: 'translateY(-50%) scaleX(1)', offset: 0.16 },
+      { opacity: 0, transform: 'translate3d(34px, -50%, 0) scaleX(1.9)' },
+    ], { duration: 280, easing: 'cubic-bezier(.12,.78,.22,1)' })
+    animation.onfinish = () => streak.remove()
+  }
+
+  private clearComboAccents(): void {
+    for (const surface of this.surfaces.values()) {
+      for (const glyph of surface.glyphs) glyph.element.style.webkitTextStroke = ''
+    }
   }
 
   private judgementPoint(): { readonly x: number; readonly y: number } | undefined {
@@ -1050,7 +1135,8 @@ export class BeatSurface {
     element.style.top = `${y}px`
     this.overlay.append(element)
 
-    const milestone = text === 'FULL COMBO!'
+    const milestone = text === 'FEVER ×5' || text === 'GOLD MODE!'
+      || text === 'GOLD TRAIL!' || text === 'FULL COMBO!'
     const seed = this.judgementIndex * 977 + this.combo * 131 + text.length * 53
     const fullCircle = text === 'MISS'
     const angle = fullCircle
@@ -1142,11 +1228,23 @@ export class BeatSurface {
     }
   }
 
-  private startCue(lane: CueLane, frame: RhythmFrame, now: number, force = false): void {
+  private startCue(
+    lane: CueLane,
+    frame: RhythmFrame,
+    now: number,
+    force = false,
+    confidence = 0.5,
+    sampleKind: BeatSample['kind'] = 'detected',
+  ): void {
     const current = lane === 'downbeat' ? this.currentDownbeatCue : this.currentFlowCue
-    const settleRatio = lane === 'downbeat' ? 0.5 : 0.7
-    if (!force && current !== undefined
-      && now < current.startedAt + current.travelMs + current.durationMs * settleRatio) return
+    if (lane === 'downbeat' && !force && current !== undefined
+      && now < current.startedAt + current.travelMs + current.durationMs * 0.5) return
+
+    const periodMs = lane === 'flow' ? this.flowDetector.periodMs() : undefined
+    if (lane === 'flow' && periodMs === undefined) return
+    if (lane === 'flow') {
+      for (const ripple of this.overlay.querySelectorAll('.dsh-bgm-flow-ripple')) ripple.remove()
+    }
 
     const index = lane === 'downbeat' ? this.downbeatIndex : this.flowIndex
     const previous = lane === 'downbeat' ? this.lastDownbeatStyle : this.lastFlowStyle
@@ -1160,18 +1258,32 @@ export class BeatSurface {
           style: chart.style,
           seed: chart.seed,
           energy,
+          confidence,
+          strength: cueStrength(confidence, index),
+          sampleKind,
+          comboBoost: this.combo >= 5,
+          goldAccent: this.combo >= 10,
+          periodMs,
           startedAt: now,
           travelMs: 90 + energy * 150,
           durationMs: 390 + energy * 140,
+          flowTracerShown: false,
         }
       : {
           lane,
           style: chart.style,
           seed: chart.seed,
           energy,
+          confidence,
+          strength: cueStrength(confidence, index),
+          sampleKind,
+          comboBoost: this.combo >= 5,
+          goldAccent: this.combo >= 10,
+          periodMs,
           startedAt: now,
-          travelMs: 620 + energy * 300,
-          durationMs: 600 + energy * 180,
+          travelMs: periodMs ?? 0,
+          durationMs: clamp((periodMs ?? 0) * 0.34, 180, 340),
+          flowTracerShown: false,
         }
 
     if (lane === 'downbeat') {
@@ -1192,6 +1304,11 @@ export class BeatSurface {
   private animateSurfaceWave(surface: Surface, cue: WaveCue, now: number): void {
     const { glyphs } = surface
     if (glyphs.length === 0) return
+    if (cue.lane === 'flow') {
+      this.animateFlowScan(surface, cue, now)
+      return
+    }
+
     const { style, energy, travelMs, durationMs } = cue
     const elapsed = Math.max(0, now - cue.startedAt)
     let minX = Number.POSITIVE_INFINITY
@@ -1208,7 +1325,7 @@ export class BeatSurface {
     const centerY = (minY + maxY) / 2
     const maxDistance = Math.max(1, Math.hypot(maxX - minX, maxY - minY) / 2)
     const xSpan = Math.max(1, maxX - minX)
-    const lift = cue.lane === 'downbeat' ? 4 + energy * 5 : 5 + energy * 5
+    const lift = 4 + energy * 5
 
     for (let index = 0; index < glyphs.length; index += 1) {
       const glyph = glyphs[index]
@@ -1317,6 +1434,96 @@ export class BeatSurface {
     }
   }
 
+  /** Flow is a measured right-to-left score scan, never a canned whole-row wave. */
+  private animateFlowScan(surface: Surface, cue: WaveCue, now: number): void {
+    const periodMs = cue.periodMs
+    if (periodMs === undefined || surface.glyphs.length === 0) return
+    const glyphs = [...surface.glyphs].sort((left, right) =>
+      right.centerX - left.centerX || right.centerY - left.centerY)
+    const stepMs = clamp(periodMs / glyphs.length, 18, 60)
+    const elapsed = Math.max(0, now - cue.startedAt)
+    const strong = cue.sampleKind === 'detected' && cue.strength === 'strong'
+    const weak = cue.sampleKind === 'fallback' || cue.strength === 'weak'
+    if (!strong) this.showFlowRipple(surface, cue, now, stepMs)
+    if (strong && elapsed < 50) this.strikeJudgementLine(cue.confidence)
+
+    const comboMultiplier = cue.comboBoost ? 1.1 : 1
+    const lift = (strong ? 18 + cue.energy * 6 : 10 + cue.energy * 4) * comboMultiplier
+    const baseScale = strong ? 1.35 : 1.3
+    const peakScale = 1 + (baseScale - 1) * comboMultiplier
+    const durationMs = cue.durationMs
+    const rest = 'translate3d(0, 0, 0) scale(1)'
+    const peakShadow = cue.goldAccent
+      ? '0 0 2px #fff7c2, 0 0 9px #ffd76a'
+      : strong
+        ? `0 ${(8 + cue.energy * 5).toFixed(1)}px 3px color-mix(in srgb, currentColor 38%, transparent), 0 0 8px color-mix(in srgb, currentColor 55%, transparent)`
+        : '0 0 7px color-mix(in srgb, currentColor 58%, white)'
+
+    for (let index = 0; index < glyphs.length; index += 1) {
+      const glyph = glyphs[index]
+      if (glyph === undefined) continue
+      for (const animation of glyph.element.getAnimations()) animation.cancel()
+      glyph.element.style.webkitTextStroke = cue.goldAccent ? '0.35px #ffd76a' : ''
+      if (weak) continue
+      const delay = (strong ? 0 : index * stepMs) - elapsed
+      if (delay + durationMs <= 0) continue
+      const press = 'translate3d(0, 1px, 0) scaleX(1.025) scaleY(.92)'
+      const peak = `translate3d(0, ${(-lift).toFixed(2)}px, 0) scale(${peakScale.toFixed(3)})`
+      const rebound = `translate3d(0, ${(lift * 0.12).toFixed(2)}px, 0) scaleX(1.03) scaleY(.97)`
+      glyph.element.animate([
+        { transform: rest, textShadow: '0 0 0 transparent' },
+        { transform: press, textShadow: '0 0 0 transparent', offset: 0.045 },
+        { transform: peak, textShadow: peakShadow, offset: 0.3 },
+        { transform: rebound, textShadow: '0 0 0 transparent', offset: 0.64 },
+        { transform: rest, textShadow: '0 0 0 transparent' },
+      ], {
+        duration: durationMs,
+        delay,
+        easing: 'cubic-bezier(.12,.8,.22,1)',
+      })
+    }
+  }
+
+  /** Weak beats remain readable: a row-local tracer advances without moving glyphs. */
+  private showFlowRipple(surface: Surface, cue: WaveCue, now: number, stepMs: number): void {
+    if (cue.flowTracerShown) return
+    cue.flowTracerShown = true
+    const rect = surface.target.getBoundingClientRect()
+    if (!isVisible(rect)) return
+    const totalMs = clamp((surface.glyphs.length - 1) * stepMs + cue.durationMs * 0.55, 180, 2_500)
+    const elapsed = Math.max(0, now - cue.startedAt)
+    if (elapsed >= totalMs) return
+    const progress = clamp(elapsed / totalMs, 0, 1)
+    const peakOpacity = cue.strength === 'medium' ? 0.2 : 0.11
+    const startOpacity = progress < 0.08
+      ? peakOpacity * progress / 0.08
+      : peakOpacity * (1 - progress) / 0.92
+    const ripple = document.createElement('span')
+    ripple.className = 'dsh-bgm-flow-ripple'
+    ripple.style.left = `${rect.right - 6}px`
+    ripple.style.top = `${rect.top}px`
+    ripple.style.height = `${rect.height}px`
+    ripple.style.color = cue.goldAccent ? '#ffd76a' : '#8fd7ff'
+    this.overlay.append(ripple)
+    const frames: Keyframe[] = [{
+      opacity: Math.max(0, startOpacity),
+      transform: `translate3d(${(-rect.width * progress).toFixed(2)}px, 0, 0)`,
+    }]
+    if (progress < 0.08) {
+      frames.push({
+        opacity: peakOpacity,
+        transform: `translate3d(${(-rect.width * 0.08).toFixed(2)}px, 0, 0)`,
+        offset: (0.08 - progress) / (1 - progress),
+      })
+    }
+    frames.push({
+      opacity: 0,
+      transform: `translate3d(${(-rect.width - 12).toFixed(2)}px, 0, 0)`,
+    })
+    const animation = ripple.animate(frames, { duration: totalMs - elapsed, easing: 'linear' })
+    animation.onfinish = () => ripple.remove()
+  }
+
   private removeSurface(surface: Surface): void {
     for (const glyph of surface.glyphs) glyph.element.remove()
     for (const parent of surface.masked) delete parent.dataset.dshBgmMasked
@@ -1351,6 +1558,7 @@ export class BeatSurface {
     this.accuracyPoints = 0
     this.noteIndex = 0
     this.judgementIndex = 0
+    this.lastJudgementStrikeAt = 0
     this.judgementLine.hidden = true
     this.comboLabel.hidden = true
     this.scoreLabel.hidden = true
@@ -1358,9 +1566,11 @@ export class BeatSurface {
     this.scoreDeltaLabel.hidden = true
     this.accuracyLabel.hidden = true
     this.accuracyLabel.textContent = 'ACC 100.00%'
-    for (const animation of this.backgroundPulse.getAnimations()) animation.cancel()
     for (const grade of this.overlay.querySelectorAll('.dsh-bgm-grade-float')) grade.remove()
     for (const ring of this.overlay.querySelectorAll('.dsh-bgm-hit-ring')) ring.remove()
+    for (const key of this.overlay.querySelectorAll('.dsh-bgm-hit-key')) key.remove()
+    for (const streak of this.overlay.querySelectorAll('.dsh-bgm-gold-streak')) streak.remove()
+    for (const ripple of this.overlay.querySelectorAll('.dsh-bgm-flow-ripple')) ripple.remove()
     for (const surface of this.surfaces.values()) this.removeSurface(surface)
     this.surfaces.clear()
   }

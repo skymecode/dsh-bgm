@@ -9,10 +9,10 @@ them over a loopback-only SSE endpoint. DSH Web mirrors active conversation
 text in a pointer-transparent per-grapheme beat layer. Deep Diving is a
 downbeat lane driven by bass/onset, while the latest reasoning, tool or
 context-injection row is an independent flow lane driven by mid/treble change.
-Streaming summaries continuously join their active wave at its current phase;
-they never restart it, and clipped text never enters the lane. Choreography is
-composed from trigger order, motion path and attack feel, yielding about 60
-downbeat combinations and more than 200 non-repeating flow combinations.
+Streaming summaries continuously join the measured flow scan at its current
+phase; they never restart it, and clipped text never enters the lane. Deep
+Diving retains about 60 downbeat combinations. The activity flow uses a single
+music-timed score instead of canned whole-row choreography.
 
 The judgement lane stays hidden until two reliable flow intervals establish a
 measured period; there is no hard-coded bootstrap tempo. A glyph then launches
@@ -23,16 +23,21 @@ out-of-window detections silently re-anchor the grid, while melodic fallback
 pulses can settle a nearby note as a reduced-confidence GOOD. The note lane and
 the row wave share one clock while Deep Diving stays on the bass/onset clock.
 Hits build Combo and a seven-digit score with local point
-bursts plus accuracy. Independent grade words burst from the judgement point,
-hit rings expand on successful notes, and 10/25/50 Combo milestones turn the
-line gold. Only an expected pulse that expires without a nearby detection
+bursts plus accuracy. Flow advances from the row tail one glyph at a time at
+`clamp(period / glyphCount, 18ms, 60ms)`. Medium pulses light and lift each
+glyph in sequence; high-confidence accented pulses hit the whole row together,
+while weak or fallback pulses move only a subtle row-local tracer. Independent
+grade words burst from the judgement point, hit rings expand on successful
+notes, and Combo 5/10/25 unlocks stronger local impacts, gold outlines and gold
+trails. Milestone words appear at 5/10/25/50. Only an expected pulse that
+expires without a nearby detection
 resets Combo.
 Very short Bash/Read calls trigger an immediate entry wave and retain only their
 latest row for 1.6 seconds, so their rhythm-game feedback survives completion.
 Final answers never animate: once the official final-text stream begins, the
-visual layer tears down and ignores subsequent token mutations. True downbeats
-add only a transient 2.2–4% soft conversation-layer glow; there is no
-full-screen white flash.
+visual layer tears down and ignores subsequent token mutations. Hits use only
+activity-text, judgement-line, ring and small local keycap feedback; the page
+and conversation background never pulse or flash.
 Each hit is a discrete wave rather than continuous line jitter. Screen-reader
 only labels remain accessible and are excluded from the visual mirror. Raw
 audio is never persisted or sent to the browser.
