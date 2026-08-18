@@ -60,6 +60,8 @@ interface PredictedNote {
   readonly targetAt: number
   readonly judgeX: number
   readonly judgeY: number
+  readonly landingLeft: number
+  readonly landingTop: number
 }
 
 function hashUnit(seed: number, salt: number): number {
@@ -432,11 +434,12 @@ function nodeHasActivity(node: Node): boolean {
  */
 export class BeatSurface {
   private readonly overlay = document.createElement('div')
+  private readonly backgroundPulse = document.createElement('div')
   private readonly judgementLine = document.createElement('div')
   private readonly comboLabel = document.createElement('div')
-  private readonly gradeLabel = document.createElement('div')
   private readonly scoreLabel = document.createElement('div')
   private readonly scoreDeltaLabel = document.createElement('div')
+  private readonly accuracyLabel = document.createElement('div')
   private readonly surfaces = new Map<HTMLElement, Surface>()
   private readonly observer: MutationObserver
   private readonly beatDetector = new BeatDetector()
@@ -461,28 +464,33 @@ export class BeatSurface {
   private predictionTargetAt: number | undefined
   private combo = 0
   private score = 0
+  private judgedCount = 0
+  private accuracyPoints = 0
   private noteIndex = 0
 
   constructor() {
     this.overlay.dataset.dshBgmOverlay = ''
     this.overlay.setAttribute('aria-hidden', 'true')
+    this.backgroundPulse.className = 'dsh-bgm-background-pulse'
     this.judgementLine.className = 'dsh-bgm-judgement-line'
     this.comboLabel.className = 'dsh-bgm-combo'
-    this.gradeLabel.className = 'dsh-bgm-grade'
     this.scoreLabel.className = 'dsh-bgm-score'
     this.scoreDeltaLabel.className = 'dsh-bgm-score-delta'
+    this.accuracyLabel.className = 'dsh-bgm-accuracy'
     this.judgementLine.hidden = true
     this.comboLabel.hidden = true
-    this.gradeLabel.hidden = true
     this.scoreLabel.hidden = true
     this.scoreDeltaLabel.hidden = true
+    this.accuracyLabel.hidden = true
     this.scoreLabel.textContent = 'SCORE 0000000'
+    this.accuracyLabel.textContent = 'ACC 100.00%'
     this.overlay.append(
+      this.backgroundPulse,
       this.judgementLine,
       this.comboLabel,
-      this.gradeLabel,
       this.scoreLabel,
       this.scoreDeltaLabel,
+      this.accuracyLabel,
     )
     this.observer = new MutationObserver((records) => {
       for (const record of records) {
@@ -581,6 +589,9 @@ export class BeatSurface {
       const now = performance.now()
       const downbeatSample = this.beatDetector.sample(frame, now)
       const flowSample = this.flowDetector.sample(frame, now)
+      if (downbeatSample?.kind === 'detected' && this.surfaces.size > 0) {
+        this.pulseBackground(downbeatSample.confidence)
+      }
       this.updatePrediction(now, flowSample)
       if (downbeatSample === undefined && flowSample === undefined) return
       if (this.refreshFrame !== undefined) cancelAnimationFrame(this.refreshFrame)
@@ -591,6 +602,16 @@ export class BeatSurface {
       if (downbeatSample !== undefined) this.startCue('downbeat', frame, now)
       if (flowSample !== undefined) this.startCue('flow', frame, now)
     }
+  }
+
+  private pulseBackground(confidence: number): void {
+    for (const animation of this.backgroundPulse.getAnimations()) animation.cancel()
+    const peakOpacity = 0.022 + confidence * 0.018
+    this.backgroundPulse.animate([
+      { opacity: 0 },
+      { opacity: peakOpacity, offset: 0.28 },
+      { opacity: 0 },
+    ], { duration: 260, easing: 'ease-out' })
   }
 
   private refresh(): void {
@@ -641,9 +662,9 @@ export class BeatSurface {
     if (surface === undefined) {
       this.judgementLine.hidden = true
       this.comboLabel.hidden = true
-      this.gradeLabel.hidden = true
       this.scoreLabel.hidden = true
       this.scoreDeltaLabel.hidden = true
+      this.accuracyLabel.hidden = true
       this.predictedNote?.element.remove()
       this.predictedNote = undefined
       return
@@ -652,9 +673,9 @@ export class BeatSurface {
     if (!isVisible(rect)) {
       this.judgementLine.hidden = true
       this.comboLabel.hidden = true
-      this.gradeLabel.hidden = true
       this.scoreLabel.hidden = true
       this.scoreDeltaLabel.hidden = true
+      this.accuracyLabel.hidden = true
       this.predictedNote?.element.remove()
       this.predictedNote = undefined
       return
@@ -665,11 +686,13 @@ export class BeatSurface {
     this.judgementLine.style.height = `${rect.height + 10}px`
     this.comboLabel.style.left = `${rect.left + 7}px`
     this.comboLabel.style.top = `${rect.top - 17}px`
-    this.gradeLabel.style.left = `${rect.left + 7}px`
-    this.gradeLabel.style.top = `${rect.bottom + 3}px`
     this.scoreLabel.hidden = false
-    this.scoreLabel.style.left = `${Math.max(rect.left + 72, rect.right - 116)}px`
+    const scoreLeft = Math.max(rect.left + 158, rect.right - 116)
+    this.scoreLabel.style.left = `${scoreLeft}px`
     this.scoreLabel.style.top = `${rect.top - 17}px`
+    this.accuracyLabel.hidden = false
+    this.accuracyLabel.style.left = `${scoreLeft - 84}px`
+    this.accuracyLabel.style.top = `${rect.top - 17}px`
     this.scoreDeltaLabel.style.left = `${Math.max(rect.left + 80, rect.right - 58)}px`
     this.scoreDeltaLabel.style.top = `${rect.bottom + 3}px`
     if (this.predictedNote !== undefined && this.predictedNote.anchor !== surface.target) {
@@ -734,23 +757,34 @@ export class BeatSurface {
     const note = source.element.cloneNode(true) as HTMLSpanElement
     note.className = 'dsh-bgm-note'
     const width = Math.max(8, Number.parseFloat(source.element.style.width) || 8)
+    const height = Math.max(8, Number.parseFloat(source.element.style.height) || 8)
     const startX = rect.right - width
-    const judgeX = rect.left - width / 2
-    const judgeY = Number.parseFloat(source.element.style.top) || rect.top
+    const landingTop = Number.parseFloat(source.element.style.top) || rect.top
+    const judgeX = rect.left
+    const judgeY = landingTop + height / 2
+    const landingLeft = judgeX - width / 2
     note.style.left = `${startX}px`
-    note.style.top = `${judgeY}px`
+    note.style.top = `${landingTop}px`
     this.overlay.append(note)
     const remaining = Math.max(1, targetAt - now)
     note.animate([
       { opacity: 0.2, transform: 'translate3d(0, 0, 0) scale(.82)' },
       { opacity: 0.82, offset: 0.72 },
-      { opacity: 1, transform: `translate3d(${(judgeX - startX).toFixed(2)}px, 0, 0) scale(1)` },
+      { opacity: 1, transform: `translate3d(${(landingLeft - startX).toFixed(2)}px, 0, 0) scale(1)` },
     ], {
       duration: Math.min(travelMs, remaining),
       easing: 'linear',
       fill: 'forwards',
     })
-    this.predictedNote = { element: note, anchor: surface.target, targetAt, judgeX, judgeY }
+    this.predictedNote = {
+      element: note,
+      anchor: surface.target,
+      targetAt,
+      judgeX,
+      judgeY,
+      landingLeft,
+      landingTop,
+    }
   }
 
   private resolveHit(confidence: number): void {
@@ -758,8 +792,8 @@ export class BeatSurface {
     if (note === undefined) return
     this.predictedNote = undefined
     for (const animation of note.element.getAnimations()) animation.cancel()
-    note.element.style.left = `${note.judgeX}px`
-    note.element.style.top = `${note.judgeY}px`
+    note.element.style.left = `${note.landingLeft}px`
+    note.element.style.top = `${note.landingTop}px`
     const scale = 1.42 + confidence * 0.48
     const feedback = note.element.animate([
       { opacity: 1, transform: 'scale(1)', color: 'currentColor' },
@@ -775,25 +809,32 @@ export class BeatSurface {
     const comboBonus = Math.min(500, Math.max(0, this.combo - 1) * 25)
     const gainedPoints = basePoints + comboBonus
     this.score = Math.min(9_999_999, this.score + gainedPoints)
-    this.showGrade(grade, gradeColor)
+    this.recordAccuracy(grade === 'PERFECT' ? 1 : grade === 'GREAT' ? 0.82 : 0.55)
+    this.showGrade(grade, gradeColor, note.judgeX, note.judgeY + 2)
+    this.showHitRing(note.judgeX, note.judgeY + 2, confidence)
     this.showScoreGain(gainedPoints, gradeColor)
     this.comboLabel.hidden = this.combo < 2
     this.comboLabel.textContent = `${this.combo} COMBO`
+    const comboMilestone = this.combo === 10 || this.combo === 25 || this.combo === 50
+    if (comboMilestone) this.showGrade('FULL COMBO!', '#ffd76a', note.judgeX, note.judgeY - 18)
     const glow = 5 + confidence * 13
+    const flashColor = comboMilestone ? '#ffd76a' : '#fff'
+    for (const animation of this.judgementLine.getAnimations()) animation.cancel()
     this.judgementLine.animate([
       { opacity: 0.65, transform: 'scaleX(1)', boxShadow: '0 0 0 transparent' },
-      { opacity: 1, transform: `scaleX(${(1.8 + confidence).toFixed(2)})`, boxShadow: `0 0 ${glow.toFixed(1)}px #fff`, background: '#fff' },
+      { opacity: 1, transform: `scaleX(${(1.8 + confidence).toFixed(2)})`, boxShadow: `0 0 ${glow.toFixed(1)}px ${flashColor}`, background: flashColor },
       { opacity: 0.65, transform: 'scaleX(1)', boxShadow: '0 0 0 transparent' },
-    ], { duration: 300 + confidence * 160, easing: 'ease-out' })
+    ], { duration: comboMilestone ? 620 : 300 + confidence * 160, easing: 'ease-out' })
   }
 
   private resolveMiss(showFeedback: boolean): void {
     const note = this.predictedNote
+    const fallbackPoint = note === undefined ? this.judgementPoint() : undefined
     this.predictedNote = undefined
     if (note !== undefined) {
       for (const animation of note.element.getAnimations()) animation.cancel()
-      note.element.style.left = `${note.judgeX}px`
-      note.element.style.top = `${note.judgeY}px`
+      note.element.style.left = `${note.landingLeft}px`
+      note.element.style.top = `${note.landingTop}px`
       const fade = note.element.animate([
         { opacity: 0.75, transform: 'scale(1)' },
         { opacity: 0, transform: 'translateY(3px) scale(.72)', color: '#ff7a90' },
@@ -803,7 +844,10 @@ export class BeatSurface {
     this.combo = 0
     this.comboLabel.hidden = true
     if (showFeedback) {
-      this.showGrade('MISS', '#ff7a90')
+      this.recordAccuracy(0)
+      const x = note?.judgeX ?? fallbackPoint?.x
+      const y = note?.judgeY ?? fallbackPoint?.y
+      if (x !== undefined && y !== undefined) this.showGrade('MISS', '#ff7a90', x, y)
       for (const animation of this.scoreLabel.getAnimations()) animation.cancel()
       this.scoreLabel.animate([
         { transform: 'translateX(0)', color: 'currentColor' },
@@ -812,6 +856,40 @@ export class BeatSurface {
         { transform: 'translateX(0)', color: 'currentColor' },
       ], { duration: 210, easing: 'ease-out' })
     }
+  }
+
+  private recordAccuracy(points: number): void {
+    this.judgedCount += 1
+    this.accuracyPoints += points
+    const percentage = this.accuracyPoints / this.judgedCount * 100
+    this.accuracyLabel.textContent = `ACC ${percentage.toFixed(2)}%`
+  }
+
+  private showHitRing(x: number, y: number, confidence: number): void {
+    const ring = document.createElement('span')
+    ring.className = 'dsh-bgm-hit-ring'
+    ring.style.left = `${x}px`
+    ring.style.top = `${y}px`
+    ring.style.color = confidence >= 0.74 ? '#fff' : confidence >= 0.5 ? '#8fd7ff' : '#9cf2c5'
+    const size = confidence >= 0.74 ? 24 : 20
+    ring.style.width = `${size}px`
+    ring.style.height = `${size}px`
+    this.overlay.append(ring)
+    const scale = confidence >= 0.74 ? 2.65 : 2.2
+    const animation = ring.animate([
+      { opacity: 0.9, transform: 'translate(-50%, -50%) scale(.5)' },
+      { opacity: 0.58, offset: 0.35 },
+      { opacity: 0, transform: `translate(-50%, -50%) scale(${scale})` },
+    ], { duration: confidence >= 0.74 ? 460 : 400, easing: 'cubic-bezier(.12,.7,.22,1)' })
+    animation.onfinish = () => ring.remove()
+  }
+
+  private judgementPoint(): { readonly x: number; readonly y: number } | undefined {
+    const surface = this.judgementSurface()
+    if (surface === undefined) return undefined
+    const rect = surface.target.getBoundingClientRect()
+    if (!isVisible(rect)) return undefined
+    return { x: rect.left, y: rect.top + rect.height / 2 }
   }
 
   private showScoreGain(points: number, color: string): void {
@@ -836,17 +914,40 @@ export class BeatSurface {
     animation.onfinish = () => { this.scoreDeltaLabel.hidden = true }
   }
 
-  private showGrade(text: string, color: string): void {
-    for (const animation of this.gradeLabel.getAnimations()) animation.cancel()
-    this.gradeLabel.hidden = false
-    this.gradeLabel.textContent = text
-    this.gradeLabel.style.color = color
-    const animation = this.gradeLabel.animate([
-      { opacity: 0, transform: 'translateY(-2px) scale(.88)' },
-      { opacity: 1, transform: 'translateY(0) scale(1.08)', offset: 0.32 },
-      { opacity: 0, transform: 'translateY(3px) scale(.96)' },
-    ], { duration: text === 'MISS' ? 520 : 620, easing: 'cubic-bezier(.2,.75,.25,1)' })
-    animation.onfinish = () => { this.gradeLabel.hidden = true }
+  private showGrade(text: string, color: string, x: number, y: number): void {
+    const element = document.createElement('span')
+    element.className = 'dsh-bgm-grade-float'
+    element.textContent = text
+    element.style.color = color
+    element.style.left = `${x}px`
+    element.style.top = `${y}px`
+    this.overlay.append(element)
+
+    const milestone = text === 'FULL COMBO!'
+    const seed = this.noteIndex * 977 + this.combo * 131 + text.length * 53
+    const fullCircle = text === 'MISS'
+    const angle = fullCircle
+      ? hashUnit(seed, 5) * Math.PI * 2
+      : -Math.PI * 0.89 + hashUnit(seed, 5) * Math.PI * 0.78
+    const distance = milestone ? 48 + hashUnit(seed, 9) * 24 : 26 + hashUnit(seed, 9) * 30
+    const deltaX = Math.cos(angle) * distance
+    const deltaY = Math.sin(angle) * distance * 0.8
+    const duration = milestone
+      ? 1_200
+      : text === 'MISS' ? 1_000 : text === 'PERFECT' ? 900 : text === 'GREAT' ? 800 : 700
+    const size = milestone ? 20 : text === 'PERFECT' || text === 'MISS' ? 18 : 16
+    element.style.fontSize = `${size}px`
+
+    const animation = element.animate([
+      { opacity: 0, transform: 'translate(-50%, -50%) scale(.6)' },
+      { opacity: 1, transform: 'translate(-50%, -50%) scale(1.25)', offset: 0.14 },
+      { opacity: 1, transform: 'translate(-50%, -50%) scale(1)', offset: 0.34 },
+      {
+        opacity: 0,
+        transform: `translate(calc(-50% + ${deltaX.toFixed(2)}px), calc(-50% + ${deltaY.toFixed(2)}px)) scale(.94)`,
+      },
+    ], { duration, easing: 'cubic-bezier(.18,.78,.26,1)' })
+    animation.onfinish = () => element.remove()
   }
 
   private rebuild(candidate: Candidate): void {
@@ -1119,13 +1220,19 @@ export class BeatSurface {
     this.currentActivityTarget = undefined
     this.combo = 0
     this.score = 0
+    this.judgedCount = 0
+    this.accuracyPoints = 0
     this.noteIndex = 0
     this.judgementLine.hidden = true
     this.comboLabel.hidden = true
-    this.gradeLabel.hidden = true
     this.scoreLabel.hidden = true
     this.scoreLabel.textContent = 'SCORE 0000000'
     this.scoreDeltaLabel.hidden = true
+    this.accuracyLabel.hidden = true
+    this.accuracyLabel.textContent = 'ACC 100.00%'
+    for (const animation of this.backgroundPulse.getAnimations()) animation.cancel()
+    for (const grade of this.overlay.querySelectorAll('.dsh-bgm-grade-float')) grade.remove()
+    for (const ring of this.overlay.querySelectorAll('.dsh-bgm-hit-ring')) ring.remove()
     for (const surface of this.surfaces.values()) this.removeSurface(surface)
     this.surfaces.clear()
   }

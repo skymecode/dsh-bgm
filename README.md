@@ -21,10 +21,13 @@ lane: a glyph launches from its trailing edge toward a fixed leading line at
 Detected mid/treble confidence grades the arrival as GOOD, GREAT or PERFECT, so
 the note lane and the row wave share one clock while Deep Diving stays on the
 bass/onset clock. Hits build Combo and a seven-digit score with local point
-bursts; an expected pulse that misses its timing window resets Combo.
+bursts plus accuracy. Independent grade words burst from the judgement point,
+hit rings expand on successful notes, and 10/25/50 Combo milestones turn the
+line gold. An expected pulse that misses its timing window resets Combo.
 Very short Bash/Read calls trigger an immediate entry wave and retain only their
 latest row for 1.6 seconds, so their rhythm-game feedback survives completion.
-Final answers, the page background and brightness remain unchanged.
+Final answers never animate. True downbeats add only a transient 2.2–4% soft
+conversation-layer glow; there is no full-screen white flash.
 Each hit is a discrete wave rather than continuous line jitter. Screen-reader
 only labels remain accessible and are excluded from the visual mirror. Raw
 audio is never persisted or sent to the browser.
