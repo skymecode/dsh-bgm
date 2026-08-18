@@ -109,6 +109,8 @@ interface TextRun {
 const SOUND_THRESHOLD = 0.025
 const SILENCE_HOLD_MS = 700
 const STREAM_REFRESH_INTERVAL_MS = 90
+const QUICK_ACTIVITY_HOLD_MS = 1_600
+const DEFAULT_FLOW_PERIOD_MS = 640
 const MAX_GLYPHS_PER_SURFACE = 96
 const MAX_SEGMENTS_PER_RUN = 180
 const EXCLUDED_TEXT = 'script, style, textarea, input, pre, code, svg, canvas, math, .katex, [aria-hidden="true"]'
@@ -338,7 +340,9 @@ class FlowDetector {
   }
 
   periodMs(): number | undefined {
-    if (this.intervals.length < 2) return undefined
+    if (this.intervals.length === 0) {
+      return this.lastDetectedAtValue > 0 ? DEFAULT_FLOW_PERIOD_MS : undefined
+    }
     const sorted = [...this.intervals].sort((a, b) => a - b)
     return sorted[Math.floor(sorted.length / 2)]
   }
@@ -371,7 +375,9 @@ function latestCandidate(candidates: readonly Candidate[]): Candidate | undefine
 }
 
 function disclosureTarget(root: HTMLElement): HTMLElement {
-  return root.querySelector<HTMLElement>('[data-disclosure-row]') ?? root
+  return root.querySelector<HTMLElement>('[data-disclosure-row]')
+    ?? root.closest<HTMLElement>('[data-disclosure-row]')
+    ?? root
 }
 
 /** At most one current activity row plus the live turn-level Deep Diving row. */
@@ -391,15 +397,21 @@ function targetCandidates(): Candidate[] {
   for (const root of flow.querySelectorAll<HTMLElement>('[data-variant="think"][data-state="running"]')) {
     liveRows.push({ target: disclosureTarget(root), kind: 'reasoning' })
   }
-  for (const root of flow.querySelectorAll<HTMLElement>('[data-chat-call-id] [data-state="running"]')) {
-    liveRows.push({ target: disclosureTarget(root), kind: 'tool' })
+  const toolRoots = [...flow.querySelectorAll<HTMLElement>('[data-chat-call-id]')]
+  for (const root of toolRoots) {
+    const running = root.matches('[data-state="running"]')
+      || root.querySelector('[data-state="running"]') !== null
+    if (running) liveRows.push({ target: disclosureTarget(root), kind: 'tool' })
   }
 
   let latestActivity = latestCandidate(liveRows)
   if (latestActivity === undefined && deepDiving !== undefined) {
     latestActivity = latestCandidate(
-      [...flow.querySelectorAll<HTMLElement>('[data-chat-flow-kind="context"]')]
-        .map(root => ({ target: disclosureTarget(root), kind: 'context' as const })),
+      [
+        ...toolRoots.map(root => ({ target: disclosureTarget(root), kind: 'tool' as const })),
+        ...[...flow.querySelectorAll<HTMLElement>('[data-chat-flow-kind="context"]')]
+          .map(root => ({ target: disclosureTarget(root), kind: 'context' as const })),
+      ],
     )
   }
 
@@ -433,6 +445,10 @@ export class BeatSurface {
   private refreshFrame: number | undefined
   private refreshTimer: number | undefined
   private silenceTimer: number | undefined
+  private lastFrame: RhythmFrame | undefined
+  private retainedActivity: Candidate | undefined
+  private retainActivityUntil = 0
+  private currentActivityTarget: HTMLElement | undefined
   private lastRefreshAt = 0
   private active = false
   private downbeatIndex = 0
@@ -471,6 +487,9 @@ export class BeatSurface {
     this.observer = new MutationObserver((records) => {
       for (const record of records) {
         if (this.overlay.contains(record.target)) continue
+        const remembersQuickActivity = this.rememberQuickActivity(record.target)
+          || (record.type === 'childList'
+            && [...record.addedNodes].some(node => this.rememberQuickActivity(node, true)))
         const touchesSurface = [...this.surfaces.values()]
           .some(surface => surface.target.contains(record.target))
         const changesActivityTree = record.type === 'attributes'
@@ -478,12 +497,26 @@ export class BeatSurface {
             [...record.addedNodes].some(nodeHasActivity)
             || [...record.removedNodes].some(nodeHasActivity)
           ))
-        if (touchesSurface || changesActivityTree) {
+        if (remembersQuickActivity || touchesSurface || changesActivityTree) {
           this.scheduleRefresh()
           return
         }
       }
     })
+  }
+
+  private rememberQuickActivity(node: Node, includeDescendant = false): boolean {
+    if (!this.active) return false
+    const element = node instanceof Element ? node : node.parentElement
+    if (element === null) return false
+    const root = element.matches('[data-chat-call-id]')
+      ? element
+      : element.closest('[data-chat-call-id]')
+        ?? (includeDescendant ? element.querySelector('[data-chat-call-id]') : null)
+    if (!(root instanceof HTMLElement)) return false
+    this.retainedActivity = { target: disclosureTarget(root), kind: 'tool' }
+    this.retainActivityUntil = performance.now() + QUICK_ACTIVITY_HOLD_MS
+    return true
   }
 
   mount(): () => void {
@@ -529,6 +562,7 @@ export class BeatSurface {
       this.deactivate()
       return
     }
+    this.lastFrame = frame
     if (hasSound(frame)) {
       if (this.silenceTimer !== undefined) window.clearTimeout(this.silenceTimer)
       this.silenceTimer = undefined
@@ -561,8 +595,25 @@ export class BeatSurface {
 
   private refresh(): void {
     if (!this.active) return
-    this.lastRefreshAt = performance.now()
-    const wanted = targetCandidates()
+    const now = performance.now()
+    this.lastRefreshAt = now
+    const liveWanted = targetCandidates()
+    const liveActivity = liveWanted.find(candidate => candidate.kind !== 'deep-diving')
+    if (liveActivity !== undefined) {
+      this.retainedActivity = liveActivity
+      this.retainActivityUntil = now + QUICK_ACTIVITY_HOLD_MS
+    }
+    const retainedActivity = liveActivity === undefined
+      && this.retainedActivity !== undefined
+      && now < this.retainActivityUntil
+      && this.retainedActivity.target.isConnected
+      && isVisible(this.retainedActivity.target.getBoundingClientRect())
+      ? this.retainedActivity
+      : undefined
+    if (liveActivity === undefined && retainedActivity === undefined) this.retainedActivity = undefined
+    const wanted = retainedActivity === undefined
+      ? liveWanted
+      : [retainedActivity, ...liveWanted]
     const wantedElements = new Set(wanted.map(candidate => candidate.target))
     for (const [target, surface] of this.surfaces) {
       if (!wantedElements.has(target)) {
@@ -572,6 +623,13 @@ export class BeatSurface {
     }
     for (const candidate of wanted) this.rebuild(candidate)
     this.updateJudgementAnchor()
+    const activityTarget = this.judgementSurface()?.target
+    if (activityTarget !== this.currentActivityTarget) {
+      this.currentActivityTarget = activityTarget
+      if (activityTarget !== undefined && this.lastFrame !== undefined) {
+        this.startCue('flow', this.lastFrame, now, true)
+      }
+    }
   }
 
   private judgementSurface(): Surface | undefined {
@@ -856,10 +914,10 @@ export class BeatSurface {
     }
   }
 
-  private startCue(lane: CueLane, frame: RhythmFrame, now: number): void {
+  private startCue(lane: CueLane, frame: RhythmFrame, now: number, force = false): void {
     const current = lane === 'downbeat' ? this.currentDownbeatCue : this.currentFlowCue
     const settleRatio = lane === 'downbeat' ? 0.5 : 0.7
-    if (current !== undefined
+    if (!force && current !== undefined
       && now < current.startedAt + current.travelMs + current.durationMs * settleRatio) return
 
     const index = lane === 'downbeat' ? this.downbeatIndex : this.flowIndex
@@ -1055,6 +1113,10 @@ export class BeatSurface {
     this.predictedNote?.element.remove()
     this.predictedNote = undefined
     this.predictionTargetAt = undefined
+    this.lastFrame = undefined
+    this.retainedActivity = undefined
+    this.retainActivityUntil = 0
+    this.currentActivityTarget = undefined
     this.combo = 0
     this.score = 0
     this.noteIndex = 0
