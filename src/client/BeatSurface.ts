@@ -112,7 +112,7 @@ const SOUND_THRESHOLD = 0.025
 const SILENCE_HOLD_MS = 700
 const STREAM_REFRESH_INTERVAL_MS = 90
 const QUICK_ACTIVITY_HOLD_MS = 1_600
-const DEFAULT_FLOW_PERIOD_MS = 640
+const DETECTION_LATENCY_COMPENSATION_MS = 30
 const MAX_GLYPHS_PER_SURFACE = 96
 const MAX_SEGMENTS_PER_RUN = 180
 const EXCLUDED_TEXT = 'script, style, textarea, input, pre, code, svg, canvas, math, .katex, [aria-hidden="true"]'
@@ -348,9 +348,7 @@ class FlowDetector {
   }
 
   periodMs(): number | undefined {
-    if (this.intervals.length === 0) {
-      return this.lastDetectedAtValue > 0 ? DEFAULT_FLOW_PERIOD_MS : undefined
-    }
+    if (this.intervals.length < 2) return undefined
     const sorted = [...this.intervals].sort((a, b) => a - b)
     return sorted[Math.floor(sorted.length / 2)]
   }
@@ -764,6 +762,16 @@ export class BeatSurface {
       this.predictedNote = undefined
       return
     }
+    if (this.flowDetector.periodMs() === undefined) {
+      this.judgementLine.hidden = true
+      this.comboLabel.hidden = true
+      this.scoreLabel.hidden = true
+      this.scoreDeltaLabel.hidden = true
+      this.accuracyLabel.hidden = true
+      this.predictedNote?.element.remove()
+      this.predictedNote = undefined
+      return
+    }
     this.judgementLine.hidden = false
     this.judgementLine.style.left = `${rect.left - 3}px`
     this.judgementLine.style.top = `${rect.top - 5}px`
@@ -799,28 +807,41 @@ export class BeatSurface {
     const periodMs = this.flowDetector.periodMs()
     const detectedAt = this.flowDetector.lastDetectedAt()
     if (periodMs === undefined || detectedAt === undefined) return
-    const hitWindow = clamp(periodMs * 0.16, 72, 155)
+    const hitWindow = clamp(periodMs * 0.22, 120, 220)
+    const judgementNow = now + DETECTION_LATENCY_COMPENSATION_MS
 
     if (sample?.kind === 'detected') {
       const note = this.predictedNote
       if (note !== undefined) {
-        const timingError = Math.abs(now - note.targetAt)
+        const timingError = Math.abs(judgementNow - note.targetAt)
         if (timingError <= hitWindow) this.resolveHit(sample.confidence)
-        else this.resolveMiss(true)
+        else {
+          note.element.remove()
+          this.predictedNote = undefined
+        }
       }
       this.predictionTargetAt = now + periodMs
       return
     }
 
+    if (sample?.kind === 'fallback') {
+      const note = this.predictedNote
+      if (note !== undefined && Math.abs(judgementNow - note.targetAt) <= hitWindow * 1.3) {
+        this.resolveHit(0.4)
+        this.predictionTargetAt = note.targetAt + periodMs
+        return
+      }
+    }
+
     let targetAt = this.predictionTargetAt ?? detectedAt + periodMs
     let missFeedbackShown = false
-    if (this.predictedNote !== undefined && now > this.predictedNote.targetAt + hitWindow) {
+    if (this.predictedNote !== undefined && judgementNow > this.predictedNote.targetAt + hitWindow) {
       const missedTargetAt = this.predictedNote.targetAt
       this.resolveMiss(true)
       missFeedbackShown = true
       targetAt = missedTargetAt + periodMs
     }
-    while (now > targetAt + hitWindow) {
+    while (judgementNow > targetAt + hitWindow) {
       if (!missFeedbackShown && this.combo > 0) {
         this.resolveMiss(true)
         missFeedbackShown = true

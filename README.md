@@ -14,16 +14,19 @@ they never restart it, and clipped text never enters the lane. Choreography is
 composed from trigger order, motion path and attack feel, yielding about 60
 downbeat combinations and more than 200 non-repeating flow combinations.
 
-The first reliable flow pulse bootstraps a 640ms prediction, then measured
-intervals continuously refine it. The latest activity row becomes a judgement
-lane: a glyph launches from its trailing edge toward a fixed leading line at
+The judgement lane stays hidden until two reliable flow intervals establish a
+measured period; there is no hard-coded bootstrap tempo. A glyph then launches
+from the latest activity row's trailing edge toward a fixed leading line at
 `lastHit + period`; travel is BPM-locked to `clamp(period * 0.75, 350ms, 900ms)`.
-Detected mid/treble confidence grades the arrival as GOOD, GREAT or PERFECT, so
-the note lane and the row wave share one clock while Deep Diving stays on the
-bass/onset clock. Hits build Combo and a seven-digit score with local point
+Detected mid/treble confidence grades the arrival as GOOD, GREAT or PERFECT;
+out-of-window detections silently re-anchor the grid, while melodic fallback
+pulses can settle a nearby note as a reduced-confidence GOOD. The note lane and
+the row wave share one clock while Deep Diving stays on the bass/onset clock.
+Hits build Combo and a seven-digit score with local point
 bursts plus accuracy. Independent grade words burst from the judgement point,
 hit rings expand on successful notes, and 10/25/50 Combo milestones turn the
-line gold. An expected pulse that misses its timing window resets Combo.
+line gold. Only an expected pulse that expires without a nearby detection
+resets Combo.
 Very short Bash/Read calls trigger an immediate entry wave and retain only their
 latest row for 1.6 seconds, so their rhythm-game feedback survives completion.
 Final answers never animate: once the official final-text stream begins, the
