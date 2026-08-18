@@ -54,6 +54,14 @@ interface WaveCue {
   readonly durationMs: number
 }
 
+interface PredictedNote {
+  readonly element: HTMLSpanElement
+  readonly anchor: HTMLElement
+  readonly targetAt: number
+  readonly judgeX: number
+  readonly judgeY: number
+}
+
 function hashUnit(seed: number, salt: number): number {
   let value = (seed ^ Math.imul(salt + 1, 0x45d9f3b)) | 0
   value = Math.imul(value ^ (value >>> 16), 0x45d9f3b)
@@ -233,16 +241,26 @@ function hasSound(frame: RhythmFrame): boolean {
     || frame.treble > SOUND_THRESHOLD
 }
 
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.min(maximum, Math.max(minimum, value))
+}
+
+interface BeatSample {
+  readonly kind: 'detected' | 'fallback'
+  readonly confidence: number
+}
+
 /** Adaptive onset gate with a short refractory window, like a rhythm-game hit lane. */
 class BeatDetector {
   private previousBass = 0
   private previousRms = 0
   private averageFlux = 0
   private fluxDeviation = 0
-  private lastHitAt = 0
+  private lastDetectedAtValue = 0
+  private lastPulseAt = 0
   private readonly intervals: number[] = []
 
-  sample(frame: RhythmFrame, now: number): boolean {
+  sample(frame: RhythmFrame, now: number): BeatSample | undefined {
     const bassRise = Math.max(0, frame.bass - this.previousBass)
     const rmsRise = Math.max(0, frame.rms - this.previousRms)
     this.previousBass = frame.bass
@@ -253,21 +271,34 @@ class BeatDetector {
     this.averageFlux = this.averageFlux * 0.9 + flux * 0.1
     this.fluxDeviation = this.fluxDeviation * 0.88 + delta * 0.12
     const threshold = Math.max(0.075, this.averageFlux + this.fluxDeviation * 0.85)
-    const sinceHit = now - this.lastHitAt
-    const detected = flux >= threshold && sinceHit >= 180
-    const period = this.period()
-    const predicted = period !== undefined
-      && sinceHit >= period * 0.94
-      && sinceHit <= period * 1.3
-    const softFallback = sinceHit >= 680 && frame.rms > SOUND_THRESHOLD
-    if (!detected && !predicted && !softFallback) return false
-
-    if (detected && this.lastHitAt > 0 && sinceHit >= 250 && sinceHit <= 1_000) {
-      this.intervals.push(sinceHit)
-      if (this.intervals.length > 8) this.intervals.shift()
+    const sinceDetected = now - this.lastDetectedAtValue
+    const detected = flux >= threshold && sinceDetected >= 180
+    if (detected) {
+      if (this.lastDetectedAtValue > 0 && sinceDetected >= 250 && sinceDetected <= 1_500) {
+        this.intervals.push(sinceDetected)
+        if (this.intervals.length > 8) this.intervals.shift()
+      }
+      this.lastDetectedAtValue = now
+      this.lastPulseAt = now
+      const confidence = clamp(0.42 + (flux - threshold) / Math.max(0.08, threshold * 1.6), 0, 1)
+      return { kind: 'detected', confidence }
     }
-    this.lastHitAt = now
-    return true
+
+    if (now - this.lastPulseAt >= 680 && frame.rms > SOUND_THRESHOLD) {
+      this.lastPulseAt = now
+      return { kind: 'fallback', confidence: 0.2 }
+    }
+    return undefined
+  }
+
+  periodMs(): number | undefined {
+    if (this.intervals.length < 2) return undefined
+    const sorted = [...this.intervals].sort((a, b) => a - b)
+    return sorted[Math.floor(sorted.length / 2)]
+  }
+
+  lastDetectedAt(): number | undefined {
+    return this.lastDetectedAtValue > 0 ? this.lastDetectedAtValue : undefined
   }
 
   reset(): void {
@@ -275,14 +306,9 @@ class BeatDetector {
     this.previousRms = 0
     this.averageFlux = 0
     this.fluxDeviation = 0
-    this.lastHitAt = 0
+    this.lastDetectedAtValue = 0
+    this.lastPulseAt = 0
     this.intervals.length = 0
-  }
-
-  private period(): number | undefined {
-    if (this.intervals.length < 2) return undefined
-    const sorted = [...this.intervals].sort((a, b) => a - b)
-    return sorted[Math.floor(sorted.length / 2)]
   }
 }
 
@@ -384,6 +410,9 @@ function nodeHasActivity(node: Node): boolean {
  */
 export class BeatSurface {
   private readonly overlay = document.createElement('div')
+  private readonly judgementLine = document.createElement('div')
+  private readonly comboLabel = document.createElement('div')
+  private readonly gradeLabel = document.createElement('div')
   private readonly surfaces = new Map<HTMLElement, Surface>()
   private readonly observer: MutationObserver
   private readonly beatDetector = new BeatDetector()
@@ -400,10 +429,21 @@ export class BeatSurface {
   private lastFlowStyle = ''
   private currentDownbeatCue: WaveCue | undefined
   private currentFlowCue: WaveCue | undefined
+  private predictedNote: PredictedNote | undefined
+  private predictionTargetAt: number | undefined
+  private combo = 0
+  private noteIndex = 0
 
   constructor() {
     this.overlay.dataset.dshBgmOverlay = ''
     this.overlay.setAttribute('aria-hidden', 'true')
+    this.judgementLine.className = 'dsh-bgm-judgement-line'
+    this.comboLabel.className = 'dsh-bgm-combo'
+    this.gradeLabel.className = 'dsh-bgm-grade'
+    this.judgementLine.hidden = true
+    this.comboLabel.hidden = true
+    this.gradeLabel.hidden = true
+    this.overlay.append(this.judgementLine, this.comboLabel, this.gradeLabel)
     this.observer = new MutationObserver((records) => {
       for (const record of records) {
         if (this.overlay.contains(record.target)) continue
@@ -481,15 +521,16 @@ export class BeatSurface {
     }
     if (this.active) {
       const now = performance.now()
-      const downbeatHit = this.beatDetector.sample(frame, now)
+      const downbeatSample = this.beatDetector.sample(frame, now)
       const flowHit = this.flowDetector.sample(frame, now)
-      if (!downbeatHit && !flowHit) return
+      this.updatePrediction(now, downbeatSample)
+      if (downbeatSample === undefined && !flowHit) return
       if (this.refreshFrame !== undefined) cancelAnimationFrame(this.refreshFrame)
       if (this.refreshTimer !== undefined) window.clearTimeout(this.refreshTimer)
       this.refreshFrame = undefined
       this.refreshTimer = undefined
       this.refresh()
-      if (downbeatHit) this.startCue('downbeat', frame, now)
+      if (downbeatSample !== undefined) this.startCue('downbeat', frame, now)
       if (flowHit) this.startCue('flow', frame, now)
     }
   }
@@ -506,6 +547,170 @@ export class BeatSurface {
       }
     }
     for (const candidate of wanted) this.rebuild(candidate)
+    this.updateJudgementAnchor()
+  }
+
+  private judgementSurface(): Surface | undefined {
+    return [...this.surfaces.values()].find(surface => surface.kind !== 'deep-diving')
+      ?? [...this.surfaces.values()].find(surface => surface.kind === 'deep-diving')
+  }
+
+  private updateJudgementAnchor(): void {
+    const surface = this.judgementSurface()
+    if (surface === undefined) {
+      this.judgementLine.hidden = true
+      this.comboLabel.hidden = true
+      this.gradeLabel.hidden = true
+      this.predictedNote?.element.remove()
+      this.predictedNote = undefined
+      return
+    }
+    const rect = surface.target.getBoundingClientRect()
+    if (!isVisible(rect)) {
+      this.judgementLine.hidden = true
+      this.predictedNote?.element.remove()
+      this.predictedNote = undefined
+      return
+    }
+    this.judgementLine.hidden = false
+    this.judgementLine.style.left = `${rect.left - 3}px`
+    this.judgementLine.style.top = `${rect.top - 5}px`
+    this.judgementLine.style.height = `${rect.height + 10}px`
+    this.comboLabel.style.left = `${rect.left + 7}px`
+    this.comboLabel.style.top = `${rect.top - 17}px`
+    this.gradeLabel.style.left = `${rect.left + 7}px`
+    this.gradeLabel.style.top = `${rect.bottom + 3}px`
+    if (this.predictedNote !== undefined && this.predictedNote.anchor !== surface.target) {
+      this.predictedNote.element.remove()
+      this.predictedNote = undefined
+    }
+  }
+
+  private updatePrediction(now: number, sample: BeatSample | undefined): void {
+    const periodMs = this.beatDetector.periodMs()
+    const detectedAt = this.beatDetector.lastDetectedAt()
+    if (periodMs === undefined || detectedAt === undefined) return
+    const hitWindow = clamp(periodMs * 0.16, 72, 155)
+
+    if (sample?.kind === 'detected') {
+      const note = this.predictedNote
+      if (note !== undefined) {
+        const timingError = Math.abs(now - note.targetAt)
+        if (timingError <= hitWindow) this.resolveHit(sample.confidence)
+        else this.resolveMiss(true)
+      }
+      this.predictionTargetAt = now + periodMs
+      return
+    }
+
+    let targetAt = this.predictionTargetAt ?? detectedAt + periodMs
+    if (this.predictedNote !== undefined && now > this.predictedNote.targetAt + hitWindow) {
+      const missedTargetAt = this.predictedNote.targetAt
+      this.resolveMiss(true)
+      targetAt = missedTargetAt + periodMs
+    }
+    while (now > targetAt + hitWindow) {
+      if (this.combo > 0) this.resolveMiss(true)
+      targetAt += periodMs
+    }
+    this.predictionTargetAt = targetAt
+
+    const travelMs = clamp(periodMs * 0.75, 350, 900)
+    if (this.predictedNote === undefined && now >= targetAt - travelMs && now < targetAt) {
+      this.spawnPredictedNote(targetAt, travelMs, now)
+    }
+  }
+
+  private spawnPredictedNote(targetAt: number, travelMs: number, now: number): void {
+    const surface = this.judgementSurface()
+    if (surface === undefined || surface.glyphs.length === 0) return
+    this.updateJudgementAnchor()
+    const rect = surface.target.getBoundingClientRect()
+    if (!isVisible(rect)) return
+    const candidates = surface.glyphs.filter(glyph => /[\p{L}\p{N}]/u.test(glyph.element.textContent ?? ''))
+    const sources = candidates.length > 0 ? candidates : surface.glyphs
+    const reverseIndex = this.noteIndex % sources.length
+    const source = sources[sources.length - 1 - reverseIndex] ?? sources.at(-1)
+    if (source === undefined) return
+    this.noteIndex += 1
+
+    const note = source.element.cloneNode(true) as HTMLSpanElement
+    note.className = 'dsh-bgm-note'
+    const width = Math.max(8, Number.parseFloat(source.element.style.width) || 8)
+    const startX = rect.right - width
+    const judgeX = rect.left - width / 2
+    const judgeY = Number.parseFloat(source.element.style.top) || rect.top
+    note.style.left = `${startX}px`
+    note.style.top = `${judgeY}px`
+    this.overlay.append(note)
+    const remaining = Math.max(1, targetAt - now)
+    note.animate([
+      { opacity: 0.2, transform: 'translate3d(0, 0, 0) scale(.82)' },
+      { opacity: 0.82, offset: 0.72 },
+      { opacity: 1, transform: `translate3d(${(judgeX - startX).toFixed(2)}px, 0, 0) scale(1)` },
+    ], {
+      duration: Math.min(travelMs, remaining),
+      easing: 'linear',
+      fill: 'forwards',
+    })
+    this.predictedNote = { element: note, anchor: surface.target, targetAt, judgeX, judgeY }
+  }
+
+  private resolveHit(confidence: number): void {
+    const note = this.predictedNote
+    if (note === undefined) return
+    this.predictedNote = undefined
+    for (const animation of note.element.getAnimations()) animation.cancel()
+    note.element.style.left = `${note.judgeX}px`
+    note.element.style.top = `${note.judgeY}px`
+    const scale = 1.42 + confidence * 0.48
+    const feedback = note.element.animate([
+      { opacity: 1, transform: 'scale(1)', color: 'currentColor' },
+      { opacity: 1, transform: `scale(${scale.toFixed(2)})`, color: '#fff', offset: 0.34 },
+      { opacity: 0, transform: 'scale(.92)', color: '#fff' },
+    ], { duration: 360 + confidence * 160, easing: 'cubic-bezier(.16,.84,.3,1)' })
+    feedback.onfinish = () => note.element.remove()
+
+    this.combo += 1
+    const grade = confidence >= 0.74 ? 'PERFECT' : confidence >= 0.5 ? 'GREAT' : 'GOOD'
+    this.showGrade(grade, confidence >= 0.74 ? '#fff' : confidence >= 0.5 ? '#8fd7ff' : '#9cf2c5')
+    this.comboLabel.hidden = this.combo < 2
+    this.comboLabel.textContent = `${this.combo} COMBO`
+    const glow = 5 + confidence * 13
+    this.judgementLine.animate([
+      { opacity: 0.65, transform: 'scaleX(1)', boxShadow: '0 0 0 transparent' },
+      { opacity: 1, transform: `scaleX(${(1.8 + confidence).toFixed(2)})`, boxShadow: `0 0 ${glow.toFixed(1)}px #fff`, background: '#fff' },
+      { opacity: 0.65, transform: 'scaleX(1)', boxShadow: '0 0 0 transparent' },
+    ], { duration: 300 + confidence * 160, easing: 'ease-out' })
+  }
+
+  private resolveMiss(showFeedback: boolean): void {
+    const note = this.predictedNote
+    this.predictedNote = undefined
+    if (note !== undefined) {
+      for (const animation of note.element.getAnimations()) animation.cancel()
+      const fade = note.element.animate([
+        { opacity: 0.75, transform: 'scale(1)' },
+        { opacity: 0, transform: 'translateY(3px) scale(.72)', color: '#ff7a90' },
+      ], { duration: 220, easing: 'ease-out' })
+      fade.onfinish = () => note.element.remove()
+    }
+    this.combo = 0
+    this.comboLabel.hidden = true
+    if (showFeedback) this.showGrade('MISS', '#ff7a90')
+  }
+
+  private showGrade(text: string, color: string): void {
+    for (const animation of this.gradeLabel.getAnimations()) animation.cancel()
+    this.gradeLabel.hidden = false
+    this.gradeLabel.textContent = text
+    this.gradeLabel.style.color = color
+    const animation = this.gradeLabel.animate([
+      { opacity: 0, transform: 'translateY(-2px) scale(.88)' },
+      { opacity: 1, transform: 'translateY(0) scale(1.08)', offset: 0.32 },
+      { opacity: 0, transform: 'translateY(3px) scale(.96)' },
+    ], { duration: text === 'MISS' ? 520 : 620, easing: 'cubic-bezier(.2,.75,.25,1)' })
+    animation.onfinish = () => { this.gradeLabel.hidden = true }
   }
 
   private rebuild(candidate: Candidate): void {
@@ -769,6 +974,14 @@ export class BeatSurface {
     this.lastFlowStyle = ''
     this.currentDownbeatCue = undefined
     this.currentFlowCue = undefined
+    this.predictedNote?.element.remove()
+    this.predictedNote = undefined
+    this.predictionTargetAt = undefined
+    this.combo = 0
+    this.noteIndex = 0
+    this.judgementLine.hidden = true
+    this.comboLabel.hidden = true
+    this.gradeLabel.hidden = true
     for (const surface of this.surfaces.values()) this.removeSurface(surface)
     this.surfaces.clear()
   }

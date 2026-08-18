@@ -12,6 +12,54 @@ const stylesheet = `
   text-rendering: inherit;
 }
 
+.dsh-bgm-note {
+  position: fixed;
+  z-index: 2147483002;
+  pointer-events: none;
+  white-space: pre;
+  transform-origin: 50% 50%;
+  will-change: transform, opacity;
+  -webkit-text-fill-color: currentColor;
+}
+
+.dsh-bgm-judgement-line {
+  position: fixed;
+  z-index: 2147483001;
+  width: 2px;
+  min-height: 22px;
+  border-radius: 2px;
+  opacity: .65;
+  background: color-mix(in srgb, var(--dsw-static-deepseek-400, #8fd7ff) 78%, white);
+  box-shadow: 0 0 5px color-mix(in srgb, var(--dsw-static-deepseek-400, #8fd7ff) 55%, transparent);
+  transform-origin: 50% 50%;
+}
+
+.dsh-bgm-combo,
+.dsh-bgm-grade {
+  position: fixed;
+  z-index: 2147483002;
+  pointer-events: none;
+  white-space: nowrap;
+  font: 600 10px/12px var(--ds-font-family, system-ui, sans-serif);
+  letter-spacing: .04em;
+  text-shadow: 0 0 5px currentColor;
+}
+
+.dsh-bgm-combo {
+  color: var(--dsw-static-deepseek-300, #a9c8ff);
+}
+
+.dsh-bgm-grade {
+  transform-origin: 0 50%;
+}
+
+.dsh-bgm-note[hidden],
+.dsh-bgm-judgement-line[hidden],
+.dsh-bgm-combo[hidden],
+.dsh-bgm-grade[hidden] {
+  display: none !important;
+}
+
 [data-dsh-bgm-overlay] {
   position: fixed;
   inset: 0;
@@ -37,6 +85,10 @@ html[data-dsh-bgm-active] [data-dsh-bgm-reactive='deep-diving'][data-dsh-bgm-mas
 
 @media (prefers-reduced-motion: reduce) {
   .dsh-bgm-glyph { transform: none !important; }
+  .dsh-bgm-note,
+  .dsh-bgm-judgement-line,
+  .dsh-bgm-combo,
+  .dsh-bgm-grade { display: none !important; }
 }
 `
 
