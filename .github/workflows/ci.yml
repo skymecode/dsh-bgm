@@ -39,7 +39,12 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile --ignore-scripts
+        env:
+          # pnpm 11 supply-chain policy rejects packages newer than 24h;
+          # freshly published official rc releases must install immediately.
+          npm_config_minimum_release_age: '0'
+          npm_config_trust_lockfile: 'true'
+        run: pnpm install --frozen-lockfile --ignore-scripts --trust-lockfile
 
       - name: Typecheck
         run: pnpm run typecheck
