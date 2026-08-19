@@ -11,7 +11,7 @@
   &nbsp;
   <a href="https://github.com/skymecode/dsh-bgm/actions/workflows/ci.yml"><img src="https://github.com/skymecode/dsh-bgm/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
   &nbsp;
-  <img src="https://img.shields.io/badge/DSH-0.1.0--rc.7-4f7cff?style=flat-square" alt="DSH 0.1.0-rc.7">
+  <img src="https://img.shields.io/badge/DSH-0.1.0--rc.8-4f7cff?style=flat-square" alt="DSH 0.1.0-rc.8">
   &nbsp;
   <img src="https://img.shields.io/badge/macOS-14.2%2B-111111?style=flat-square" alt="macOS 14.2+">
   &nbsp;
@@ -22,7 +22,7 @@
 
 <p align="center">
   <strong>让 DSH Web 的思考、工具调用与上下文注入真正进入音乐节奏。</strong><br>
-  <em>系统音频采集 · 连续文字波面 · 音游判定 · RGB 氛围柱 · 四幕结算</em>
+  <em>系统音频采集 · 连续文字波面 · 音游判定 · 随波逐流氛围柱 · 卡牌奖励 · 四幕结算</em>
 </p>
 
 <div align="center">
@@ -44,13 +44,13 @@ dsh-bgm 是一个直接装入官方 DSH Web profile 的跨平台插件。它监�
 | 系统音乐感知 | 无 | 默认输出设备的 RMS、低/中/高频与起音 |
 | 活动状态 | 静态文字 | 连续 BPM 波面、方向变化与强弱分层 |
 | 音游反馈 | 无 | 预测音符、判定线、Combo、Score、Accuracy |
-| 宽屏留白 | 空白 | 左右各 12 根 RGB 氛围律动柱 |
+| 宽屏留白 | 空白 | 左右各 12 根随波逐流的 RGB 频谱柱 |
 | 回答完成 | 正常结束 | 3.2 秒透明四幕结算表演 |
 | 播放器兼容 | 需要逐个适配 | 与播放器无关，直接读取系统输出 |
 
 ## 一键安装
 
-需要已安装官方 DSH `0.1.0-rc.7`。Release 提供同时包含 macOS 通用原生助手和 Windows x64 自包含助手的预构建包；安装时无需克隆仓库，也无需授权执行 Git `prepare` 脚本。
+需要已安装官方 DSH `0.1.0-rc.8`。Release 提供同时包含 macOS 通用原生助手和 Windows x64 自包含助手的预构建包；安装时无需克隆仓库，也无需授权执行 Git `prepare` 脚本。
 
 ```sh
 dsh plugin --profile web add https://github.com/skymecode/dsh-bgm/releases/latest/download/dsh-bgm.tgz
@@ -69,7 +69,7 @@ dsh web
 生产环境建议固定版本，避免 `latest` 在以后指向新版本：
 
 ```sh
-dsh plugin --profile web add https://github.com/skymecode/dsh-bgm/releases/download/v0.1.0/dsh-bgm.tgz
+dsh plugin --profile web add https://github.com/skymecode/dsh-bgm/releases/download/v0.1.1/dsh-bgm.tgz
 ```
 
 ### 卸载
@@ -98,9 +98,9 @@ dsh plugin --profile web remove dsh-bgm
 
 GOOD / GREAT / PERFECT 会累计 Combo、七位 Score 与 Accuracy。窗外瞬态只重锚节拍，不直接制造 MISS；只有预测拍真正超时才会重置 Combo。
 
-### 左右 RGB 氛围柱
+### 左右随波逐流氛围柱
 
-宽屏时，官方对话列外的左右留白会各出现 12 根对称 RGB 频谱柱。它们只更新 GPU 合成层的高度与透明度，不重建 DOM，也不覆盖正文。窄屏或空间不足时自动隐藏。
+宽屏时，官方对话列外的左右留白会各出现 12 根 RGB 频谱柱。它们以连续行进波的方式律动：柱体随频率依次涌起又落下，波流从两侧外沿持续流向对话区中间，速度跟随音量包络；每个重拍还会有一个波峰从外沿汇入中心。柱体只更新 GPU 合成层的 `transform` 与 `opacity`，不重建 DOM，也不覆盖正文。窄屏或空间不足时自动隐藏。
 
 氛围柱默认开启。点击输入框左下角 `+`，在官方命令菜单中选择 `/bgm-atmosphere`，即可开启或关闭；选择会保存在浏览器本地。
 
@@ -114,6 +114,10 @@ GOOD / GREAT / PERFECT 会累计 Combo、七位 Score 与 Accuracy。窗外瞬�
 4. PERFECT、GREAT、GOOD、MISS、ACC 与最大 Combo 逐项点亮。
 
 音乐停止、暂停或切歌只做静默清理，不会突然弹出结算。
+
+### 里程碑卡牌奖励
+
+得分或 PERFECT 到达里程碑时会弹出卡牌奖励：得分 1,000–5,000 触发轻量药丸卡，得分 10,000 起或 PERFECT ×5 起触发完整卡牌演出——卡片从左上角带着 3D 翻转飞入右侧，落定后评级式大字弹入、双扩散圆环、放射粒子与音符雨随后展开。每个里程碑每轮只结算一次，若奖励展示期间又跨过新里程碑，会在下一次命中自动补放。
 
 ## 工作方式
 

@@ -76,6 +76,7 @@ const stylesheet = `
 .dsh-bgm-combo,
 .dsh-bgm-score,
 .dsh-bgm-score-delta,
+.dsh-bgm-score-pop,
 .dsh-bgm-accuracy {
   position: fixed;
   z-index: 2147483002;
@@ -96,7 +97,7 @@ const stylesheet = `
   pointer-events: none;
   white-space: nowrap;
   font-family: var(--ds-font-family, system-ui, sans-serif);
-  font-weight: 700;
+  font-weight: 800;
   line-height: 1;
   letter-spacing: .06em;
   text-shadow:
@@ -104,6 +105,23 @@ const stylesheet = `
     0 1px 2px rgba(0, 0, 0, .85),
     0 0 1px rgba(0, 0, 0, .9);
   will-change: transform, opacity;
+}
+
+.dsh-bgm-score-pop {
+  position: fixed;
+  z-index: 2147483003;
+  pointer-events: none;
+  white-space: nowrap;
+  font-family: var(--ds-font-family, system-ui, sans-serif);
+  font-weight: 850;
+  line-height: 1;
+  letter-spacing: .075em;
+  font-variant-numeric: tabular-nums;
+  text-shadow:
+    0 0 10px currentColor,
+    0 1px 2px rgba(0, 0, 0, .88),
+    0 0 1px rgba(0, 0, 0, .95);
+  will-change: transform, opacity, filter;
 }
 
 .dsh-bgm-hit-ring {
@@ -202,7 +220,8 @@ const stylesheet = `
   contain: layout style;
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 17%, #000 100%);
   mask-image: linear-gradient(to bottom, transparent 0, #000 17%, #000 100%);
-  transition: opacity 72ms linear;
+  mix-blend-mode: screen;
+  transition: opacity 64ms linear;
   will-change: opacity;
 }
 
@@ -213,16 +232,15 @@ const stylesheet = `
   border-radius: 999px 999px 3px 3px;
   background: linear-gradient(
     to top,
-    hsl(var(--dsh-bgm-atmosphere-hue) 92% 55% / .14) 0,
-    hsl(var(--dsh-bgm-atmosphere-hue) 94% 62% / .76) 58%,
-    hsl(calc(var(--dsh-bgm-atmosphere-hue) + 42) 100% 72% / .96) 100%
+    hsl(var(--dsh-bgm-atmosphere-hue) 88% 50% / .02) 0,
+    hsl(var(--dsh-bgm-atmosphere-hue) 92% 60% / .16) 46%,
+    hsl(calc(var(--dsh-bgm-atmosphere-hue) + 30) 100% 72% / .5) 86%,
+    hsl(calc(var(--dsh-bgm-atmosphere-hue) + 42) 100% 86% / .78) 100%
   );
-  box-shadow:
-    0 0 7px hsl(var(--dsh-bgm-atmosphere-hue) 100% 64% / .52),
-    0 0 18px hsl(var(--dsh-bgm-atmosphere-hue) 100% 58% / .18);
-  transform: scaleY(.045);
+  box-shadow: 0 0 10px hsl(var(--dsh-bgm-atmosphere-hue) 100% 64% / .32);
+  transform: scale(1, .045);
   transform-origin: 50% 100%;
-  transition: transform 72ms linear, opacity 72ms linear;
+  transition: transform 48ms linear, opacity 64ms linear;
   will-change: transform, opacity;
 }
 
@@ -388,6 +406,8 @@ const stylesheet = `
   width: 110px;
   color: var(--dsw-static-deepseek-300, #a9c8ff);
   text-align: right;
+  font-size: 11px;
+  font-weight: 750;
   font-variant-numeric: tabular-nums;
   letter-spacing: .075em;
   transform-origin: 100% 50%;
@@ -460,8 +480,108 @@ html[data-dsh-bgm-hitstop] .dsh-bgm-flow-ripple,
 html[data-dsh-bgm-hitstop] .dsh-bgm-center-ray,
 html[data-dsh-bgm-hitstop] .dsh-bgm-flow-breath,
 html[data-dsh-bgm-hitstop] .dsh-bgm-grade-float,
+html[data-dsh-bgm-hitstop] .dsh-bgm-score-pop,
 html[data-dsh-bgm-hitstop] .dsh-bgm-judgement-line {
   animation-play-state: paused !important;
+}
+
+/* Slot-machine reward drop (score / PERFECT milestones). */
+.dsh-bgm-reward {
+  position: fixed;
+  z-index: 2147483004;
+  pointer-events: none;
+  will-change: transform, opacity;
+}
+
+.dsh-bgm-reward--box {
+  position: relative;
+  display: grid;
+  gap: 8px;
+  min-height: 180px;
+  align-content: center;
+  padding: 16px 18px 18px;
+  border-radius: 16px;
+  background: linear-gradient(160deg, rgba(22, 30, 58, .78), rgba(34, 18, 62, .84));
+  border: 1px solid rgba(255, 215, 106, .4);
+  box-shadow:
+    0 0 26px rgba(255, 215, 106, .26),
+    0 18px 44px rgba(0, 0, 0, .5),
+    inset 0 1px 0 rgba(255, 255, 255, .14);
+  backdrop-filter: blur(14px) saturate(1.25);
+  -webkit-backdrop-filter: blur(14px) saturate(1.25);
+  overflow: hidden;
+}
+
+/* Card-frame corner outline, like a game card. */
+.dsh-bgm-reward--box::before {
+  content: '';
+  position: absolute;
+  inset: 7px;
+  border: 1px solid rgba(255, 215, 106, .22);
+  border-radius: 11px;
+  pointer-events: none;
+}
+
+/* One soft shine sweep across the landed panel. */
+.dsh-bgm-reward--box::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(105deg, transparent 22%, rgba(255, 255, 255, .16) 46%, transparent 70%);
+  transform: translateX(-130%);
+  animation: dsh-bgm-reward-shine 900ms ease-out 380ms 1 forwards;
+  pointer-events: none;
+}
+
+@keyframes dsh-bgm-reward-shine {
+  to { transform: translateX(130%); }
+}
+
+.dsh-bgm-reward--box-mini {
+  min-height: auto;
+  padding: 9px 20px 11px;
+  border-radius: 999px;
+  border-color: rgba(255, 215, 106, .42);
+  box-shadow:
+    0 0 16px rgba(255, 215, 106, .24),
+    0 12px 30px rgba(0, 0, 0, .42),
+    inset 0 1px 0 rgba(255, 255, 255, .14);
+}
+
+.dsh-bgm-reward--pill {
+  font: 700 19px/1 var(--ds-font-family, system-ui, sans-serif);
+  letter-spacing: .14em;
+  white-space: nowrap;
+  text-shadow: 0 0 12px currentColor, 0 0 26px rgba(255, 215, 106, .45);
+}
+
+.dsh-bgm-reward--title {
+  text-align: center;
+  font: 800 13px/1 var(--ds-font-family, system-ui, sans-serif);
+  letter-spacing: .34em;
+  background: linear-gradient(90deg, #ffe9a8, #ffd76a 45%, #fff3c4);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 0 10px rgba(255, 215, 106, .55));
+}
+
+.dsh-bgm-reward--label {
+  text-align: center;
+  font: 800 11px/1 var(--ds-font-family, system-ui, sans-serif);
+  letter-spacing: .3em;
+  opacity: .92;
+  text-shadow: 0 0 8px currentColor;
+}
+
+.dsh-bgm-reward--value {
+  text-align: center;
+  font: 900 46px/.95 var(--ds-font-family, system-ui, sans-serif);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .04em;
+  text-shadow: 0 0 12px currentColor, 0 0 32px color-mix(in srgb, currentColor 62%, transparent);
+  transform-origin: 50% 54%;
+  will-change: transform, opacity;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -471,6 +591,7 @@ html[data-dsh-bgm-hitstop] .dsh-bgm-judgement-line {
   .dsh-bgm-result-ring,
   .dsh-bgm-result-particle,
   .dsh-bgm-result-note { display: none !important; }
+  .dsh-bgm-reward,
   .dsh-bgm-note,
   .dsh-bgm-hit-ring,
   .dsh-bgm-hit-particle,
@@ -483,6 +604,7 @@ html[data-dsh-bgm-hitstop] .dsh-bgm-judgement-line {
   .dsh-bgm-judgement-line,
   .dsh-bgm-combo,
   .dsh-bgm-grade-float,
+  .dsh-bgm-score-pop,
   .dsh-bgm-score,
   .dsh-bgm-score-delta,
   .dsh-bgm-accuracy { display: none !important; }

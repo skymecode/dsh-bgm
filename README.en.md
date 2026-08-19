@@ -16,11 +16,11 @@
 
 dsh-bgm turns system audio into rhythm-game feedback for the official DSH Web UI. It captures the default output device independently of the music player, maps bass/onset to Deep Diving, maps mid/treble changes to the latest reasoning or tool row, and keeps final-answer text readable and still.
 
-The wide-screen layout gains two optional 12-bar RGB spectrum banks in the empty gutters. Stable activity text forms a continuous BPM-locked wave surface; predicted notes fly toward a judgement line and build Score, Accuracy and Combo. A completed answer can end with a transparent 3.2-second score roll, rank burst, note rain and staggered statistics reveal.
+The wide-screen layout gains two optional 12-bar RGB spectrum banks in the empty gutters; the banks move as a continuous travelling wave that flows from the outer edges toward the conversation, with a beat crest merging inward on every downbeat. Stable activity text forms a continuous BPM-locked wave surface; predicted notes fly toward a judgement line and build Score, Accuracy and Combo. Score and PERFECT milestones trigger card-game rewards: a light pill card from 1,000–5,000 points, then a full card that tumbles in from the upper-left with a 3D flip, lands on the right and pops like the rank reveal. A completed answer can end with a transparent 3.2-second score roll, rank burst, note rain and staggered statistics reveal.
 
 ## Install into the official DSH Web profile
 
-Requires DSH `0.1.0-rc.7`. The release tarball contains a universal macOS helper and a self-contained Windows x64 helper, so the install does not need a source build:
+Requires DSH `0.1.0-rc.8`. The release tarball contains a universal macOS helper and a self-contained Windows x64 helper, so the install does not need a source build:
 
 ```sh
 dsh plugin --profile web add https://github.com/skymecode/dsh-bgm/releases/latest/download/dsh-bgm.tgz
@@ -30,7 +30,7 @@ dsh web
 Pinned release:
 
 ```sh
-dsh plugin --profile web add https://github.com/skymecode/dsh-bgm/releases/download/v0.1.0/dsh-bgm.tgz
+dsh plugin --profile web add https://github.com/skymecode/dsh-bgm/releases/download/v0.1.1/dsh-bgm.tgz
 ```
 
 Remove it with:
@@ -50,7 +50,7 @@ Supported hosts:
 - Raw PCM stays in the local native helper's memory and is never recorded, persisted or uploaded.
 - The browser receives only RMS, bass, mid, treble, onset and timestamps.
 - Streaming React text is never rebuilt into per-glyph mirrors.
-- The 24 atmosphere bars are persistent nodes updated only through GPU-composited transforms and opacity.
+- The 24 atmosphere bars are persistent nodes updated only through GPU-composited transforms and opacity; the travelling wave adds no per-bar filters or layout reads.
 - Reduced-motion preferences disable the primary animations.
 
 ## Development

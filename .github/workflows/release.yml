@@ -161,7 +161,7 @@ jobs:
           (cd dist && sha256sum dsh-bgm.tgz > SHA256SUMS.txt)
 
       - name: Install pinned official DSH CLI
-        run: npm install --global @deepseek-ai/dsh@0.1.0-rc.7
+        run: npm install --global @deepseek-ai/dsh@0.1.0-rc.8
 
       - name: Verify clean official DSH Web profile install
         env:

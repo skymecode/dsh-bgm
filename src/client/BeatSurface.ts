@@ -5,6 +5,7 @@ import { subscribeBgm } from './stream.ts'
 type SurfaceKind = 'reasoning' | 'tool' | 'context' | 'deep-diving'
 type CueLane = 'downbeat' | 'flow'
 type HitStrength = 'weak' | 'medium' | 'strong'
+type HitGrade = 'GOOD' | 'GREAT' | 'PERFECT'
 type TriggerOrder = 'together' | 'left-right' | 'right-left' | 'center-out'
   | 'edges-in' | 'even-odd' | 'odd-even' | 'shuffle'
 type MotionStyle = 'punch' | 'jump' | 'drop' | 'split' | 'converge'
@@ -42,6 +43,8 @@ interface Surface {
   readonly streaming: boolean
   readonly masked: Set<HTMLElement>
   readonly signature: string
+  /** Last time the expensive signature/text-walk check ran for this row. */
+  lastCheckedAt: number
 }
 
 interface Candidate {
@@ -177,6 +180,14 @@ const QUICK_ACTIVITY_HOLD_MS = 1_600
 const DETECTION_LATENCY_COMPENSATION_MS = 30
 const MAX_GLYPHS_PER_SURFACE = 96
 const MAX_SEGMENTS_PER_RUN = 180
+const SCORE_REWARD_MILESTONES: readonly number[] = [10_000, 50_000, 100_000, 250_000, 500_000, 1_000_000, 2_000_000, 5_000_000]
+const MINI_SCORE_REWARD_MILESTONES: readonly number[] = [1_000, 2_000, 3_000, 4_000, 5_000]
+const PERFECT_REWARD_MILESTONES: readonly number[] = [5, 10, 25, 50, 100, 200]
+const REWARD_SPIN_MS = 1_100
+const REWARD_HOLD_MS = 1_600
+const REWARD_COOLDOWN_MS = 2_800
+const REWARD_MINI_HOLD_MS = 900
+const REWARD_MINI_COOLDOWN_MS = 1_600
 const EXCLUDED_TEXT = 'script, style, textarea, input, pre, code, svg, canvas, math, .katex, [aria-hidden="true"]'
 const ACTIVITY_MARKER = [
   '[data-variant="think"][data-state="running"]',
@@ -337,13 +348,13 @@ class BeatDetector {
     this.previousBass = frame.bass
     this.previousRms = frame.rms
 
-    const flux = frame.onset * 0.72 + bassRise * 1.35 + rmsRise * 0.55
+    const flux = frame.onset * 0.72 + bassRise * 1.5 + rmsRise * 0.55
     const delta = Math.abs(flux - this.averageFlux)
     this.averageFlux = this.averageFlux * 0.9 + flux * 0.1
     this.fluxDeviation = this.fluxDeviation * 0.88 + delta * 0.12
-    const threshold = Math.max(0.075, this.averageFlux + this.fluxDeviation * 0.85)
+    const threshold = Math.max(0.055, this.averageFlux + this.fluxDeviation * 0.8)
     const sinceDetected = now - this.lastDetectedAtValue
-    const detected = flux >= threshold && sinceDetected >= 180
+    const detected = flux >= threshold && sinceDetected >= 160
     if (detected) {
       this.lastDetectedAtValue = now
       this.lastPulseAt = now
@@ -351,7 +362,7 @@ class BeatDetector {
       return { kind: 'detected', confidence }
     }
 
-    if (now - this.lastPulseAt >= 680 && frame.rms > SOUND_THRESHOLD) {
+    if (now - this.lastPulseAt >= 620 && frame.rms > SOUND_THRESHOLD) {
       this.lastPulseAt = now
       return { kind: 'fallback', confidence: 0.2 }
     }
@@ -388,9 +399,9 @@ class FlowDetector {
     const delta = Math.abs(flux - this.averageFlux)
     this.averageFlux = this.averageFlux * 0.9 + flux * 0.1
     this.fluxDeviation = this.fluxDeviation * 0.86 + delta * 0.14
-    const threshold = Math.max(0.052, this.averageFlux + this.fluxDeviation * 0.78)
+    const threshold = Math.max(0.045, this.averageFlux + this.fluxDeviation * 0.78)
     const sinceDetected = now - this.lastDetectedAtValue
-    const detected = flux >= threshold && sinceDetected >= 220
+    const detected = flux >= threshold && sinceDetected >= 200
     if (detected) {
       if (this.lastDetectedAtValue > 0 && sinceDetected >= 280 && sinceDetected <= 1_800) {
         this.intervals.push(sinceDetected)
@@ -402,7 +413,7 @@ class FlowDetector {
       return { kind: 'detected', confidence }
     }
 
-    const melodicFallback = now - this.lastPulseAt >= 760
+    const melodicFallback = now - this.lastPulseAt >= 680
       && (frame.mid > SOUND_THRESHOLD || frame.treble > SOUND_THRESHOLD)
     if (!melodicFallback) return undefined
     this.lastPulseAt = now
@@ -410,7 +421,7 @@ class FlowDetector {
   }
 
   periodMs(): number | undefined {
-    if (this.intervals.length < 2) return undefined
+    if (this.intervals.length < 1) return undefined
     const sorted = [...this.intervals].sort((a, b) => a - b)
     return sorted[Math.floor(sorted.length / 2)]
   }
@@ -463,7 +474,13 @@ function disclosureTarget(root: HTMLElement): HTMLElement {
 }
 
 /** At most one current activity row plus the live turn-level Deep Diving row. */
+let lastCandidateScanAt = 0
+let lastCandidateResult: Candidate[] = []
+
 function targetCandidates(): Candidate[] {
+  const now = performance.now()
+  if (now - lastCandidateScanAt < 100) return lastCandidateResult
+  lastCandidateScanAt = now
   const flow = latestFlow()
   if (flow === undefined) return []
 
@@ -498,6 +515,7 @@ function targetCandidates(): Candidate[] {
   const result: Candidate[] = []
   if (latestActivity !== undefined) result.push(latestActivity)
   if (deepDiving !== undefined && deepDiving.target !== latestActivity?.target) result.push(deepDiving)
+  lastCandidateResult = result
   return result
 }
 
@@ -536,6 +554,7 @@ export class BeatSurface {
   private readonly accuracyLabel = document.createElement('div')
   private readonly surfaces = new Map<HTMLElement, Surface>()
   private readonly breathLayers = new Map<HTMLElement, HTMLSpanElement>()
+  private readonly glyphAnimations = new WeakMap<HTMLSpanElement, Animation>()
   private readonly observer: MutationObserver
   private readonly beatDetector = new BeatDetector()
   private readonly flowDetector = new FlowDetector()
@@ -550,6 +569,7 @@ export class BeatSurface {
   private currentActivityTarget: HTMLElement | undefined
   private finalOutputStreaming = false
   private lastRefreshAt = 0
+  private lastAnchorUpdateAt = 0
   private active = false
   private downbeatIndex = 0
   private flowIndex = 0
@@ -577,6 +597,12 @@ export class BeatSurface {
   private lastHitstopAt = 0
   private hitstopTimer: number | undefined
   private hitstopAnimations: Animation[] = []
+  private rewardPanel: HTMLDivElement | undefined
+  private rewardTimers: number[] = []
+  private rewardParticles: HTMLSpanElement[] = []
+  private rewardShownUntil = 0
+  private readonly scoreRewards = new Set<number>()
+  private readonly perfectRewards = new Set<number>()
   private energyTarget = 0
   private energyEnvelope = 0
 
@@ -665,6 +691,7 @@ export class BeatSurface {
     this.currentDownbeatCue = undefined
     this.currentFlowCue = undefined
     this.dismissResultCard(false)
+    this.dismissReward(false)
     this.noteIndex = 0
     this.judgementIndex = 0
     this.lastJudgementStrikeAt = 0
@@ -679,6 +706,7 @@ export class BeatSurface {
     this.accuracyLabel.hidden = true
     this.accuracyLabel.textContent = 'ACC 100.00%'
     for (const grade of this.overlay.querySelectorAll('.dsh-bgm-grade-float')) grade.remove()
+    for (const pop of this.overlay.querySelectorAll('.dsh-bgm-score-pop')) pop.remove()
     for (const ring of this.overlay.querySelectorAll('.dsh-bgm-hit-ring')) ring.remove()
     for (const particle of this.overlay.querySelectorAll('.dsh-bgm-hit-particle')) particle.remove()
     for (const key of this.overlay.querySelectorAll('.dsh-bgm-hit-key')) key.remove()
@@ -763,9 +791,9 @@ export class BeatSurface {
     for (const surface of this.surfaces.values()) {
       if (!surface.streaming) continue
       const layer = this.ensureBreathLayer(surface.target)
-      const rise = -energy * 3
+      const rise = -energy * 4
       surface.target.style.setProperty('--dsh-bgm-breath-y', `${rise.toFixed(2)}px`)
-      surface.target.style.setProperty('--dsh-bgm-breath-scale', (1 + energy * 0.015).toFixed(4))
+      surface.target.style.setProperty('--dsh-bgm-breath-scale', (1 + energy * 0.02).toFixed(4))
       const rect = surface.target.getBoundingClientRect()
       if (!isVisible(rect)) {
         layer.hidden = true
@@ -775,10 +803,14 @@ export class BeatSurface {
       layer.style.left = `${rect.left}px`
       layer.style.top = `${rect.bottom + 1}px`
       layer.style.width = `${rect.width}px`
-      layer.style.opacity = (0.04 + energy * 0.32).toFixed(3)
-      layer.style.transform = `scaleX(${(0.55 + energy * 0.45).toFixed(3)})`
+      layer.style.opacity = (0.07 + energy * 0.45).toFixed(3)
+      layer.style.transform = `scaleX(${(0.6 + energy * 0.4).toFixed(3)})`
     }
-    this.updateJudgementAnchor()
+    const now = performance.now()
+    if (now - this.lastAnchorUpdateAt >= 100) {
+      this.lastAnchorUpdateAt = now
+      this.updateJudgementAnchor()
+    }
   }
 
   private ensureBreathLayer(target: HTMLElement): HTMLSpanElement {
@@ -861,14 +893,15 @@ export class BeatSurface {
       const now = performance.now()
       const downbeatSample = this.beatDetector.sample(frame, now)
       const flowSample = this.flowDetector.sample(frame, now)
+      if (downbeatSample !== undefined) {
+        this.atmosphere.pulse(downbeatSample.confidence, downbeatSample.kind)
+      }
       if (this.finalOutputStreaming) return
       this.updatePrediction(now, flowSample)
       if (downbeatSample === undefined && flowSample === undefined) return
-      if (this.refreshFrame !== undefined) cancelAnimationFrame(this.refreshFrame)
-      if (this.refreshTimer !== undefined) window.clearTimeout(this.refreshTimer)
-      this.refreshFrame = undefined
-      this.refreshTimer = undefined
-      this.refresh()
+      // Cues stay immediate (WAAPI only); DOM scans/rebuilds always go through
+      // the throttled path so the audio callback never blocks the main thread.
+      this.scheduleRefresh()
       if (downbeatSample !== undefined) {
         this.startCue('downbeat', frame, now, false, downbeatSample.confidence, downbeatSample.kind)
       }
@@ -911,7 +944,11 @@ export class BeatSurface {
         this.surfaces.delete(target)
       }
     }
-    for (const candidate of wanted) this.rebuild(candidate)
+    const scanNow = performance.now()
+    for (const candidate of wanted) {
+      const existing = this.surfaces.get(candidate.target)
+      if (existing === undefined || scanNow - existing.lastCheckedAt >= 250) this.rebuild(candidate)
+    }
     this.updateJudgementAnchor()
     const activityTarget = this.judgementSurface()?.target
     if (activityTarget !== this.currentActivityTarget) {
@@ -1145,7 +1182,7 @@ export class BeatSurface {
 
     this.combo += 1
     this.maxCombo = Math.max(this.maxCombo, this.combo)
-    const grade = confidence >= 0.74 ? 'PERFECT' : confidence >= 0.5 ? 'GREAT' : 'GOOD'
+    const grade: HitGrade = confidence >= 0.74 ? 'PERFECT' : confidence >= 0.5 ? 'GREAT' : 'GOOD'
     if (grade === 'PERFECT') this.perfectCount += 1
     else if (grade === 'GREAT') this.greatCount += 1
     else this.goodCount += 1
@@ -1154,6 +1191,8 @@ export class BeatSurface {
     const comboBonus = Math.min(500, Math.max(0, this.combo - 1) * 25)
     const gainedPoints = basePoints + comboBonus
     this.score = Math.min(9_999_999, this.score + gainedPoints)
+    this.checkScoreReward()
+    this.checkPerfectReward()
     this.recordAccuracy(grade === 'PERFECT' ? 1 : grade === 'GREAT' ? 0.82 : 0.55)
     this.showGrade(grade, gradeColor, note.judgeX, note.judgeY + 2)
     this.showHitRing(note.judgeX, note.judgeY + 2, confidence)
@@ -1161,7 +1200,7 @@ export class BeatSurface {
     const surfaceRect = this.judgementSurface()?.target.getBoundingClientRect()
     this.showKeyStrike(note.judgeX, note.judgeY, surfaceRect?.height ?? 28, confidence)
     if (this.combo >= 25) this.showGoldStreak(note.judgeX, note.judgeY)
-    this.showScoreGain(gainedPoints, gradeColor)
+    this.showScoreGain(gainedPoints, gradeColor, grade)
     this.comboLabel.hidden = this.combo < 2
     this.comboLabel.textContent = `${this.combo} COMBO`
     this.comboLabel.style.color = this.combo >= 10 ? '#ffd76a' : ''
@@ -1182,7 +1221,7 @@ export class BeatSurface {
   /** Freeze only the plugin-owned rhythm layer for one short impact frame. */
   private triggerHitstop(): void {
     const now = performance.now()
-    if (this.lastHitstopAt > 0 && now - this.lastHitstopAt <= 160) return
+    if (this.lastHitstopAt > 0 && now - this.lastHitstopAt <= 300) return
     this.lastHitstopAt = now
     document.documentElement.dataset.dshBgmHitstop = ''
     this.hitstopAnimations = this.overlay.getAnimations({ subtree: true })
@@ -1200,6 +1239,242 @@ export class BeatSurface {
     }
     this.hitstopAnimations = []
     if (resetCooldown) this.lastHitstopAt = 0
+  }
+
+  /** Score milestones unlock the slot-machine reward drop. */
+  private checkScoreReward(): void {
+    const mini = [...MINI_SCORE_REWARD_MILESTONES]
+      .filter(value => this.score >= value && !this.scoreRewards.has(value))
+      .sort((a, b) => a - b)[0]
+    if (mini !== undefined) {
+      if (this.playReward('SCORE', mini.toLocaleString('en-US'), '#ffd76a', '★', true)) {
+        this.scoreRewards.add(mini)
+      }
+      return
+    }
+    const milestone = [...SCORE_REWARD_MILESTONES]
+      .filter(value => this.score >= value && !this.scoreRewards.has(value))
+      .sort((a, b) => a - b)[0]
+    if (milestone === undefined) return
+    if (this.playReward('SCORE', milestone.toLocaleString('en-US'), '#ffd76a', '★')) {
+      this.scoreRewards.add(milestone)
+    }
+  }
+
+  /** PERFECT streaks unlock their own reward drop. */
+  private checkPerfectReward(): void {
+    const milestone = [...PERFECT_REWARD_MILESTONES]
+      .filter(value => this.perfectCount >= value && !this.perfectRewards.has(value))
+      .sort((a, b) => a - b)[0]
+    if (milestone === undefined) return
+    if (this.playReward('PERFECT', `×${milestone}`, '#9cf2c5', '7')) {
+      this.perfectRewards.add(milestone)
+    }
+  }
+
+  /** Reward drop: the panel slides from the top; the value then pops like the result rank. */
+  private playReward(label: string, value: string, color: string, jackpot: string, mini = false): boolean {
+    if (this.finalOutputStreaming) return false
+    const now = performance.now()
+    const cooldown = mini ? REWARD_MINI_COOLDOWN_MS : REWARD_COOLDOWN_MS
+    if (now < this.rewardShownUntil || this.rewardPanel !== undefined) return false
+    this.rewardShownUntil = now + cooldown
+
+    const panel = document.createElement('div')
+    panel.className = 'dsh-bgm-reward'
+    panel.setAttribute('aria-hidden', 'true')
+    const box = document.createElement('div')
+    box.className = mini ? 'dsh-bgm-reward--box dsh-bgm-reward--box-mini' : 'dsh-bgm-reward--box'
+    // Card-game placement: the card lands on the right side, slightly above the middle.
+    const flightMs = mini ? 750 : 950
+    const cardWidth = Math.min(mini ? 210 : 232, window.innerWidth - 32)
+    panel.style.left = `${Math.max(12, window.innerWidth - cardWidth - 28)}px`
+    panel.style.top = `${Math.max(12, Math.round(window.innerHeight * (mini ? 0.3 : 0.36)))}px`
+    panel.style.width = `${cardWidth}px`
+    if (mini) {
+      const pill = document.createElement('span')
+      pill.className = 'dsh-bgm-reward--pill'
+      pill.textContent = `${label} ${value}`
+      pill.style.color = color
+      box.append(pill)
+      panel.append(box)
+      this.overlay.append(panel)
+      this.rewardPanel = panel
+      const flight = this.flyRewardCard(panel, flightMs)
+      flight.onfinish = () => {
+        this.popRewardValue(pill, color)
+        this.spawnRewardBurst(box, color, 6, 0.7)
+      }
+      const dismissTimer = window.setTimeout(() => {
+        this.dismissReward(true)
+      }, flightMs + REWARD_MINI_HOLD_MS)
+      this.rewardTimers.push(dismissTimer)
+      return true
+    }
+    const title = document.createElement('div')
+    title.className = 'dsh-bgm-reward--title'
+    title.textContent = 'JACKPOT!'
+    const labelEl = document.createElement('div')
+    labelEl.className = 'dsh-bgm-reward--label'
+    labelEl.textContent = `${label} ${jackpot}`
+    labelEl.style.color = color
+    const valueEl = document.createElement('div')
+    valueEl.className = 'dsh-bgm-reward--value'
+    valueEl.textContent = value
+    valueEl.style.color = color
+    box.append(title, labelEl, valueEl)
+    panel.append(box)
+    this.overlay.append(panel)
+    this.rewardPanel = panel
+
+    // Card-game entrance: tumbles in from the upper-left, lands on the right.
+    const flight = this.flyRewardCard(panel, flightMs)
+    flight.onfinish = () => {
+      this.popRewardValue(valueEl, color)
+      this.spawnRewardBurst(box, color, 12, 1.15)
+      this.spawnRewardNotes(box, color)
+    }
+
+    const dismissTimer = window.setTimeout(() => {
+      this.dismissReward(true)
+    }, REWARD_SPIN_MS + REWARD_HOLD_MS)
+    this.rewardTimers.push(dismissTimer)
+    return true
+  }
+
+  /** Card-game entrance: the card flies from the upper-left and tumbles once to the right. */
+  private flyRewardCard(panel: HTMLDivElement, durationMs: number): Animation {
+    return panel.animate(
+      [
+        { opacity: 0, transform: 'perspective(900px) translate3d(-58vw, -34vh, 0) rotate(-24deg) rotateY(0deg) scale(.5)' },
+        { opacity: 1, transform: 'perspective(900px) translate3d(-7vw, -7vh, 0) rotate(-10deg) rotateY(140deg) scale(.88)', offset: 0.32 },
+        { transform: 'perspective(900px) translate3d(3vw, 4vh, 0) rotate(6deg) rotateY(280deg) scale(1.03)', offset: 0.6 },
+        { transform: 'perspective(900px) translate3d(0, 0, 0) rotate(0deg) rotateY(360deg) scale(1)', offset: 0.85 },
+        { transform: 'perspective(900px) translate3d(0, -8px, 0) rotate(0deg) rotateY(360deg) scale(1.04)', offset: 0.93 },
+        { transform: 'perspective(900px) translate3d(0, 0, 0) rotate(0deg) rotateY(360deg) scale(1)' },
+      ],
+      { duration: durationMs, easing: 'cubic-bezier(.2,.85,.28,1)' },
+    )
+  }
+
+  /** Rank-style pop: tiny spin-in, overshoot, settle with a strong glow. */
+  private popRewardValue(element: HTMLElement, color: string): void {
+    element.animate(
+      [
+        { opacity: 0, transform: 'scale(.18) rotate(-8deg)', textShadow: '0 0 0 transparent' },
+        {
+          opacity: 1,
+          transform: 'scale(1.34) rotate(2deg)',
+          textShadow: `0 0 16px ${color}, 0 0 42px ${color}`,
+          offset: 0.45,
+        },
+        { opacity: 1, transform: 'scale(.94) rotate(-1deg)', offset: 0.72 },
+        { opacity: 1, transform: 'scale(1) rotate(0)' },
+      ],
+      { duration: 720, easing: 'cubic-bezier(.12,.82,.2,1)' },
+    )
+  }
+
+  /** Expanding rings + radial particles, same feel as the result rank burst. */
+  private spawnRewardBurst(box: HTMLElement, color: string, particleCount: number, power: number): void {
+    const rect = box.getBoundingClientRect()
+    const centerX = rect.left + rect.width / 2
+    const centerY = rect.top + rect.height / 2
+    for (let index = 0; index < 2; index += 1) {
+      const ring = document.createElement('span')
+      ring.className = 'dsh-bgm-result-ring'
+      ring.style.left = `${centerX}px`
+      ring.style.top = `${centerY}px`
+      ring.style.color = color
+      this.overlay.append(ring)
+      this.rewardParticles.push(ring)
+      ring.animate(
+        [
+          { opacity: 0, transform: 'translate(-50%, -50%) scale(.2)' },
+          { opacity: 0.9 - index * 0.22, transform: 'translate(-50%, -50%) scale(.48)', offset: 0.12 },
+          { opacity: 0, transform: `translate(-50%, -50%) scale(${(2.8 * power - index * 0.42).toFixed(2)})` },
+        ],
+        { duration: 620 + index * 110, delay: index * 70, easing: 'cubic-bezier(.12,.72,.2,1)', fill: 'both' },
+      ).onfinish = () => ring.remove()
+    }
+    for (let index = 0; index < particleCount; index += 1) {
+      const particle = document.createElement('span')
+      particle.className = 'dsh-bgm-result-particle'
+      particle.style.left = `${centerX}px`
+      particle.style.top = `${centerY}px`
+      particle.style.color = color
+      this.overlay.append(particle)
+      this.rewardParticles.push(particle)
+      const angle = index / particleCount * Math.PI * 2 + hashUnit(this.judgementIndex + index, 401) * 0.35
+      const distance = (34 + hashUnit(this.judgementIndex + index, 409) * 46) * power
+      particle.animate(
+        [
+          { opacity: 0, transform: 'translate(-50%, -50%) scale(.4)' },
+          { opacity: 1, transform: 'translate(-50%, -50%) scale(1)', offset: 0.12 },
+          {
+            opacity: 0,
+            transform: `translate(calc(-50% + ${(Math.cos(angle) * distance).toFixed(1)}px), calc(-50% + ${(Math.sin(angle) * distance).toFixed(1)}px)) scale(.2)`,
+          },
+        ],
+        { duration: 580, delay: 40, easing: 'cubic-bezier(.14,.78,.2,1)', fill: 'both' },
+      ).onfinish = () => particle.remove()
+    }
+  }
+
+  /** A few music notes fall from the top, like the result show finale. */
+  private spawnRewardNotes(box: HTMLElement, color: string): void {
+    const rect = box.getBoundingClientRect()
+    const left = rect.left
+    const width = rect.width
+    const landingY = rect.top
+    for (let index = 0; index < 7; index += 1) {
+      const note = document.createElement('span')
+      note.className = 'dsh-bgm-result-note'
+      note.textContent = index % 3 === 0 ? '♫' : '♪'
+      note.style.left = `${clamp(left - 30 + hashUnit(index + this.judgementIndex, 431) * (width + 60), 12, window.innerWidth - 28)}px`
+      note.style.top = '-34px'
+      note.style.color = color
+      note.style.fontSize = `${13 + Math.round(hashUnit(index, 439) * 10)}px`
+      this.overlay.append(note)
+      this.rewardParticles.push(note)
+      const drift = (hashUnit(index, 443) - 0.5) * 60
+      const rotate = (hashUnit(index, 449) - 0.5) * 200
+      note.animate(
+        [
+          { opacity: 0, transform: 'translate3d(0, -20px, 0) rotate(0deg) scale(.8)' },
+          { opacity: 0.9, offset: 0.15 },
+          { opacity: 0.72, offset: 0.76 },
+          { opacity: 0, transform: `translate3d(${drift.toFixed(1)}px, ${(landingY + 60).toFixed(1)}px, 0) rotate(${rotate.toFixed(1)}deg) scale(1.06)` },
+        ],
+        {
+          duration: 1_300 + hashUnit(index, 457) * 700,
+          delay: 60 + hashUnit(index, 461) * 300,
+          easing: 'cubic-bezier(.22,.48,.36,1)',
+          fill: 'both',
+        },
+      ).onfinish = () => note.remove()
+    }
+  }
+
+  private dismissReward(animated = false): void {
+    for (const timer of this.rewardTimers) window.clearTimeout(timer)
+    this.rewardTimers = []
+    for (const particle of this.rewardParticles) particle.remove()
+    this.rewardParticles = []
+    const panel = this.rewardPanel
+    this.rewardPanel = undefined
+    if (panel === undefined) return
+    if (animated) {
+      panel.animate(
+        [
+          { opacity: 1, transform: 'perspective(900px) translate3d(0, 0, 0) rotate(0deg) scale(1)' },
+          { opacity: 0, transform: 'perspective(900px) translate3d(-28vw, -20vh, 0) rotate(-16deg) scale(.5)' },
+        ],
+        { duration: 360, easing: 'cubic-bezier(.5,0,.75,1)' },
+      ).onfinish = () => panel.remove()
+    } else {
+      panel.remove()
+    }
   }
 
   private strikeJudgementLine(confidence: number): void {
@@ -1256,11 +1531,22 @@ export class BeatSurface {
       if (x !== undefined && y !== undefined) this.showGrade('MISS', '#ff7a90', x, y)
       for (const animation of this.scoreLabel.getAnimations()) animation.cancel()
       this.scoreLabel.animate([
-        { transform: 'translateX(0)', color: 'currentColor' },
-        { transform: 'translateX(-2px)', color: '#ff7a90', offset: 0.28 },
-        { transform: 'translateX(1.5px)', color: '#ff7a90', offset: 0.58 },
-        { transform: 'translateX(0)', color: 'currentColor' },
-      ], { duration: 210, easing: 'ease-out' })
+        { transform: 'translateX(0) scale(1)', filter: 'brightness(1)' },
+        {
+          transform: 'translateX(-4px) scale(.92, 1.08)',
+          color: '#ff7a90',
+          filter: 'brightness(1.45) drop-shadow(0 0 5px #ff516f)',
+          offset: 0.18,
+        },
+        {
+          transform: 'translateX(2px) scale(1.2, .96)',
+          color: '#ff7a90',
+          filter: 'brightness(1.25) drop-shadow(0 0 3px #ff516f)',
+          offset: 0.48,
+        },
+        { transform: 'translateX(-1px) scale(.98)', color: '#ff9aac', offset: 0.72 },
+        { transform: 'translateX(0) scale(1)', filter: 'brightness(1)' },
+      ], { duration: 420, easing: 'cubic-bezier(.16,.82,.26,1)' })
     }
   }
 
@@ -1649,29 +1935,85 @@ export class BeatSurface {
     return { x: rect.left, y: rect.top + rect.height / 2 }
   }
 
-  private showScoreGain(points: number, color: string): void {
+  private showScoreGain(points: number, color: string, grade: HitGrade): void {
     this.scoreLabel.hidden = false
     this.scoreLabel.textContent = `SCORE ${String(this.score).padStart(7, '0')}`
+    const peakScale = grade === 'PERFECT' ? 1.72 : grade === 'GREAT' ? 1.52 : 1.36
+    const duration = grade === 'PERFECT' ? 640 : grade === 'GREAT' ? 560 : 480
     for (const animation of this.scoreLabel.getAnimations()) animation.cancel()
     this.scoreLabel.animate([
-      { transform: 'scale(1)', filter: 'brightness(1)' },
-      { transform: 'scale(1.075)', filter: 'brightness(1.5)', offset: 0.34 },
-      { transform: 'scale(1)', filter: 'brightness(1)' },
-    ], { duration: 320, easing: 'cubic-bezier(.2,.82,.3,1)' })
+      { transform: 'scale(1)', filter: 'brightness(1)', letterSpacing: '.075em' },
+      {
+        transform: 'scale(.94, 1.08)',
+        filter: `brightness(1.35) drop-shadow(0 0 3px ${color})`,
+        letterSpacing: '.055em',
+        offset: 0.1,
+      },
+      {
+        transform: `scale(${peakScale.toFixed(2)})`,
+        filter: `brightness(2.15) drop-shadow(0 0 12px ${color})`,
+        letterSpacing: grade === 'PERFECT' ? '.2em' : '.16em',
+        offset: 0.3,
+      },
+      {
+        transform: 'scale(.97)',
+        filter: `brightness(1.25) drop-shadow(0 0 3px ${color})`,
+        letterSpacing: '.07em',
+        offset: 0.62,
+      },
+      { transform: 'scale(1)', filter: 'brightness(1)', letterSpacing: '.075em' },
+    ], { duration, easing: 'cubic-bezier(.14,.84,.24,1)' })
 
-    for (const animation of this.scoreDeltaLabel.getAnimations()) animation.cancel()
-    this.scoreDeltaLabel.hidden = false
-    this.scoreDeltaLabel.textContent = `+${points}`
-    this.scoreDeltaLabel.style.color = color
-    const animation = this.scoreDeltaLabel.animate([
-      { opacity: 0, transform: 'translateY(3px) scale(.88)' },
-      { opacity: 1, transform: 'translateY(0) scale(1.08)', offset: 0.28 },
-      { opacity: 0, transform: 'translateY(-5px) scale(.96)' },
-    ], { duration: 680, easing: 'cubic-bezier(.18,.8,.28,1)' })
-    animation.onfinish = () => { this.scoreDeltaLabel.hidden = true }
+    // Every gain owns its element, so quick consecutive hits can finish their
+    // casino-style payout motion instead of cancelling the previous number.
+    const existingPops = this.overlay.querySelectorAll('.dsh-bgm-score-pop')
+    if (existingPops.length >= 6) existingPops.item(0).remove()
+    const pop = document.createElement('span')
+    pop.className = 'dsh-bgm-score-pop'
+    pop.textContent = `+${points}`
+    pop.style.color = color
+    pop.style.fontSize = `${grade === 'PERFECT' ? 21 : grade === 'GREAT' ? 19 : 17}px`
+    const rect = this.scoreLabel.getBoundingClientRect()
+    pop.style.left = `${rect.right - 2}px`
+    pop.style.top = `${rect.top + rect.height / 2}px`
+    this.overlay.append(pop)
+    const driftX = 16 + hashUnit(this.judgementIndex, 41) * 14
+    const driftY = 36 + hashUnit(this.judgementIndex, 43) * 22
+    const popScale = grade === 'PERFECT' ? 2 : grade === 'GREAT' ? 1.75 : 1.52
+    const popAnimation = pop.animate([
+      { opacity: 0, transform: 'translate(-100%, -50%) scale(.42) rotate(-3deg)' },
+      {
+        opacity: 1,
+        transform: `translate(-100%, -50%) scale(${popScale}) rotate(1deg)`,
+        filter: `brightness(2.2) drop-shadow(0 0 10px ${color})`,
+        offset: 0.12,
+      },
+      {
+        opacity: 1,
+        transform: 'translate(-100%, -50%) scale(.94) rotate(0)',
+        filter: `brightness(1.25) drop-shadow(0 0 3px ${color})`,
+        offset: 0.3,
+      },
+      {
+        opacity: 1,
+        transform: 'translate(-100%, -50%) scale(1.16)',
+        offset: 0.42,
+      },
+      {
+        opacity: 0,
+        transform: `translate(calc(-100% - ${driftX.toFixed(1)}px), calc(-50% - ${driftY.toFixed(1)}px)) scale(.82)`,
+        filter: 'brightness(1)',
+      },
+    ], {
+      duration: grade === 'PERFECT' ? 1_150 : grade === 'GREAT' ? 1_000 : 880,
+      easing: 'cubic-bezier(.16,.82,.24,1)',
+    })
+    popAnimation.onfinish = () => pop.remove()
   }
 
   private showGrade(text: string, color: string, x: number, y: number): void {
+    const existingGrades = this.overlay.querySelectorAll('.dsh-bgm-grade-float')
+    if (existingGrades.length >= 10) existingGrades.item(0).remove()
     const element = document.createElement('span')
     element.className = 'dsh-bgm-grade-float'
     element.textContent = text
@@ -1691,18 +2033,42 @@ export class BeatSurface {
     const deltaX = Math.cos(angle) * distance
     const deltaY = Math.sin(angle) * distance * 0.8
     const duration = milestone
-      ? 1_200
-      : text === 'MISS' ? 1_000 : text === 'PERFECT' ? 900 : text === 'GREAT' ? 800 : 700
-    const size = milestone ? 20 : text === 'PERFECT' || text === 'MISS' ? 18 : 16
+      ? 1_250
+      : text === 'MISS' ? 1_100 : text === 'PERFECT' ? 1_050 : text === 'GREAT' ? 920 : 820
+    const size = milestone
+      ? 23
+      : text === 'PERFECT' || text === 'MISS' ? 25 : text === 'GREAT' ? 23 : 21
+    const peakScale = milestone
+      ? 1.62
+      : text === 'PERFECT' || text === 'MISS' ? 1.58 : text === 'GREAT' ? 1.46 : 1.36
     element.style.fontSize = `${size}px`
 
     const animation = element.animate([
-      { opacity: 0, transform: 'translate(-50%, -50%) scale(.6)' },
-      { opacity: 1, transform: 'translate(-50%, -50%) scale(1.25)', offset: 0.14 },
-      { opacity: 1, transform: 'translate(-50%, -50%) scale(1)', offset: 0.34 },
+      { opacity: 0, transform: 'translate(-50%, -50%) scale(.42) rotate(-4deg)', letterSpacing: '.02em' },
+      {
+        opacity: 1,
+        transform: `translate(-50%, -50%) scale(${peakScale}) rotate(1deg)`,
+        filter: `brightness(1.9) drop-shadow(0 0 7px ${color})`,
+        letterSpacing: '.14em',
+        offset: 0.12,
+      },
+      {
+        opacity: 1,
+        transform: 'translate(-50%, -50%) scale(.93) rotate(0)',
+        filter: `brightness(1.25) drop-shadow(0 0 3px ${color})`,
+        letterSpacing: '.055em',
+        offset: 0.28,
+      },
+      {
+        opacity: 1,
+        transform: 'translate(-50%, -50%) scale(1.08)',
+        letterSpacing: '.075em',
+        offset: 0.42,
+      },
       {
         opacity: 0,
-        transform: `translate(calc(-50% + ${deltaX.toFixed(2)}px), calc(-50% + ${deltaY.toFixed(2)}px)) scale(.94)`,
+        transform: `translate(calc(-50% + ${deltaX.toFixed(2)}px), calc(-50% + ${deltaY.toFixed(2)}px)) scale(.88)`,
+        filter: 'brightness(1)',
       },
     ], { duration, easing: 'cubic-bezier(.18,.78,.26,1)' })
     animation.onfinish = () => element.remove()
@@ -1731,7 +2097,10 @@ export class BeatSurface {
         ]
     const signature = signatureParts.join('\u0000')
     const previous = this.surfaces.get(candidate.target)
-    if (previous?.signature === signature) return
+    if (previous?.signature === signature) {
+      previous.lastCheckedAt = performance.now()
+      return
+    }
     if (previous !== undefined) this.removeSurface(previous, streaming)
 
     const glyphs: Glyph[] = []
@@ -1783,6 +2152,7 @@ export class BeatSurface {
       streaming,
       masked,
       signature,
+      lastCheckedAt: performance.now(),
     }
     this.surfaces.set(candidate.target, surface)
     candidate.target.dataset.dshBgmReactive = candidate.kind
@@ -1810,8 +2180,8 @@ export class BeatSurface {
     sampleKind: BeatSample['kind'] = 'detected',
   ): void {
     const current = lane === 'downbeat' ? this.currentDownbeatCue : this.currentFlowCue
-    if (lane === 'downbeat' && !force && current !== undefined
-      && now < current.startedAt + current.travelMs + current.durationMs * 0.5) return
+    const minGapMs = lane === 'downbeat' ? 280 : 320
+    if (!force && current !== undefined && now - current.startedAt < minGapMs) return
 
     const periodMs = lane === 'flow' ? this.flowDetector.periodMs() : undefined
     if (lane === 'flow' && periodMs === undefined) return
@@ -1968,7 +2338,8 @@ export class BeatSurface {
           break
         }
       }
-      for (const animation of glyph.element.getAnimations()) animation.cancel()
+      const previousWave = this.glyphAnimations.get(glyph.element)
+      if (previousWave !== undefined) previousWave.cancel()
       const localTime = elapsed - progress * travelMs
       if (localTime >= durationMs) continue
       const rest = 'translate3d(0, 0, 0) scale(1)'
@@ -2001,11 +2372,15 @@ export class BeatSurface {
               { transform: rebound, offset: 0.7 },
               { transform: rest },
             ]
-      glyph.element.animate(frames, {
+      const waveAnimation = glyph.element.animate(frames, {
         duration: durationMs,
         delay: progress * travelMs - elapsed,
         easing: 'cubic-bezier(.18,.82,.28,1)',
       })
+      this.glyphAnimations.set(glyph.element, waveAnimation)
+      waveAnimation.onfinish = () => {
+        if (this.glyphAnimations.get(glyph.element) === waveAnimation) this.glyphAnimations.delete(glyph.element)
+      }
     }
   }
 
@@ -2065,9 +2440,13 @@ export class BeatSurface {
       if (glyph === undefined) continue
       const rawHorizontal = clamp((glyph.centerX - minX) / xSpan, 0, 1)
       const horizontal = reverse ? 1 - rawHorizontal : rawHorizontal
-      for (const animation of glyph.element.getAnimations()) animation.cancel()
+      const previousWave = this.glyphAnimations.get(glyph.element)
+      if (previousWave !== undefined) previousWave.cancel()
       glyph.element.style.webkitTextStroke = cue.goldAccent ? '0.35px #ffd76a' : ''
-      const restShadow = '0 0 0 transparent'
+      // One static glow per cue instead of a text-shadow keyframe per sample:
+      // the shadow channel repaints the glyph every frame, which is the main
+      // conversation-time lag source. Motion stays fully compositor-driven.
+      glyph.element.style.textShadow = peakShadow
       const frames: Keyframe[] = frameOffsets.map((progress) => {
         const envelope = Math.sin(Math.PI * progress)
         const phase = progress * Math.PI * 2 * phaseMultiplier
@@ -2077,14 +2456,17 @@ export class BeatSurface {
         return {
           offset: progress,
           transform: `translate3d(0, ${peakY.toFixed(2)}px, 0) scaleY(${scaleY.toFixed(3)})`,
-          textShadow: envelope > 0.32 ? peakShadow : restShadow,
         }
       })
-      glyph.element.animate(frames, {
+      const waveAnimation = glyph.element.animate(frames, {
         duration: waveDurationMs,
         delay: -elapsed,
         easing: 'linear',
       })
+      this.glyphAnimations.set(glyph.element, waveAnimation)
+      waveAnimation.onfinish = () => {
+        if (this.glyphAnimations.get(glyph.element) === waveAnimation) this.glyphAnimations.delete(glyph.element)
+      }
     }
   }
 
@@ -2207,12 +2589,16 @@ export class BeatSurface {
     this.accuracyLabel.hidden = true
     this.accuracyLabel.textContent = 'ACC 100.00%'
     for (const grade of this.overlay.querySelectorAll('.dsh-bgm-grade-float')) grade.remove()
+    for (const pop of this.overlay.querySelectorAll('.dsh-bgm-score-pop')) pop.remove()
     for (const ring of this.overlay.querySelectorAll('.dsh-bgm-hit-ring')) ring.remove()
     for (const particle of this.overlay.querySelectorAll('.dsh-bgm-hit-particle')) particle.remove()
     for (const key of this.overlay.querySelectorAll('.dsh-bgm-hit-key')) key.remove()
     for (const streak of this.overlay.querySelectorAll('.dsh-bgm-gold-streak')) streak.remove()
     for (const ripple of this.overlay.querySelectorAll('.dsh-bgm-flow-ripple')) ripple.remove()
     for (const ray of this.overlay.querySelectorAll('.dsh-bgm-center-ray')) ray.remove()
+    this.dismissReward(false)
+    this.scoreRewards.clear()
+    this.perfectRewards.clear()
     for (const surface of this.surfaces.values()) this.removeSurface(surface)
     this.surfaces.clear()
     this.resetScoreState()

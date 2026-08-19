@@ -2,7 +2,7 @@
 
 ## Language boundary
 
-The DSH-facing package follows the official DSH rc.7 stack:
+The DSH-facing package follows the official DSH rc.8 stack:
 
 - TypeScript for the Host Cordis plugin.
 - React + TSX for the DSH Web client.

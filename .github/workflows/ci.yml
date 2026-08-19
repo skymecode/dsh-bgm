@@ -57,7 +57,7 @@ jobs:
           grep -F 'package/cordis.patch.yml' "$RUNNER_TEMP/package-files.txt"
 
       - name: Install pinned official DSH CLI
-        run: npm install --global @deepseek-ai/dsh@0.1.0-rc.7
+        run: npm install --global @deepseek-ai/dsh@0.1.0-rc.8
 
       - name: Mount through the official plugin command
         env:
