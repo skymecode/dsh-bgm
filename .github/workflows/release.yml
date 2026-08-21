@@ -183,10 +183,10 @@ jobs:
           grep -F '# == dsh-bgm' "$RUNNER_TEMP/dsh-web-config-0.1.0-rc.8.yml"
           grep -F 'name: dsh-bgm' "$RUNNER_TEMP/dsh-web-config-0.1.0-rc.8.yml"
 
-      - name: Install latest official DSH CLI
+      - name: Install previous official DSH CLI
         run: npm install --global @deepseek-ai/dsh@0.1.1-rc.1
 
-      - name: Verify clean latest DSH Web profile install
+      - name: Verify clean previous DSH Web profile install
         env:
           DSH_HOME: ${{ runner.temp }}/release-dsh-home-0.1.1-rc.1
           DSH_TELEMETRY_DISABLED: '1'
@@ -195,6 +195,19 @@ jobs:
           dsh web --dump-config > "$RUNNER_TEMP/dsh-web-config-0.1.1-rc.1.yml"
           grep -F '# == dsh-bgm' "$RUNNER_TEMP/dsh-web-config-0.1.1-rc.1.yml"
           grep -F 'name: dsh-bgm' "$RUNNER_TEMP/dsh-web-config-0.1.1-rc.1.yml"
+
+      - name: Install latest official DSH CLI
+        run: npm install --global @deepseek-ai/dsh@0.1.1-rc.2
+
+      - name: Verify clean latest DSH Web profile install
+        env:
+          DSH_HOME: ${{ runner.temp }}/release-dsh-home-0.1.1-rc.2
+          DSH_TELEMETRY_DISABLED: '1'
+        run: |
+          dsh plugin --profile web add "$PWD/dist/dsh-bgm.tgz"
+          dsh web --dump-config > "$RUNNER_TEMP/dsh-web-config-0.1.1-rc.2.yml"
+          grep -F '# == dsh-bgm' "$RUNNER_TEMP/dsh-web-config-0.1.1-rc.2.yml"
+          grep -F 'name: dsh-bgm' "$RUNNER_TEMP/dsh-web-config-0.1.1-rc.2.yml"
 
       - name: Create GitHub Release
         env:

@@ -20,7 +20,7 @@ The wide-screen layout gains two optional 12-bar RGB spectrum banks in the empty
 
 ## Install into the official DSH Web profile
 
-Supports DSH `0.1.0-rc.8` and the latest `0.1.1-rc.1`. The release tarball contains a universal macOS helper and a self-contained Windows x64 helper, so the install does not need a source build:
+Supports DSH `0.1.0-rc.8`, `0.1.1-rc.1`, and the latest `0.1.1-rc.2`. The release tarball contains a universal macOS helper and a self-contained Windows x64 helper, so the install does not need a source build:
 
 ```sh
 dsh plugin --profile web add https://github.com/skymecode/dsh-bgm/releases/latest/download/dsh-bgm.tgz
@@ -30,7 +30,7 @@ dsh web
 Pinned release:
 
 ```sh
-dsh plugin --profile web add https://github.com/skymecode/dsh-bgm/releases/download/v0.1.1/dsh-bgm.tgz
+dsh plugin --profile web add https://github.com/skymecode/dsh-bgm/releases/download/v0.1.2/dsh-bgm.tgz
 ```
 
 Remove it with:
@@ -64,7 +64,7 @@ pnpm run build
 dsh plugin --profile web add link:.
 ```
 
-CI builds Host and Client bundles, produces universal macOS and Windows x64 native helpers, inspects the packed artifact, and mounts it into clean official DSH `0.1.0-rc.8` and `0.1.1-rc.1` Web profiles. A `v*` tag assembles `dsh-bgm.tgz`, writes `SHA256SUMS.txt`, and publishes both through GitHub Releases.
+CI builds Host and Client bundles, produces universal macOS and Windows x64 native helpers, inspects the packed artifact, and mounts it into clean official DSH `0.1.0-rc.8`, `0.1.1-rc.1`, and `0.1.1-rc.2` Web profiles. A `v*` tag assembles `dsh-bgm.tgz`, writes `SHA256SUMS.txt`, and publishes both through GitHub Releases.
 
 ## License
 
