@@ -11,7 +11,7 @@
   &nbsp;
   <a href="https://github.com/skymecode/dsh-bgm/actions/workflows/ci.yml"><img src="https://github.com/skymecode/dsh-bgm/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
   &nbsp;
-  <img src="https://img.shields.io/badge/DSH-0.1.0--rc.8-4f7cff?style=flat-square" alt="DSH 0.1.0-rc.8">
+  <img src="https://img.shields.io/badge/DSH-0.1.0--rc.8%20%7C%200.1.1--rc.1-4f7cff?style=flat-square" alt="DSH 0.1.0-rc.8 / 0.1.1-rc.1">
   &nbsp;
   <img src="https://img.shields.io/badge/macOS-14.2%2B-111111?style=flat-square" alt="macOS 14.2+">
   &nbsp;
@@ -50,7 +50,7 @@ dsh-bgm 是一个直接装入官方 DSH Web profile 的跨平台插件。它监�
 
 ## 一键安装
 
-需要已安装官方 DSH `0.1.0-rc.8`。Release 提供同时包含 macOS 通用原生助手和 Windows x64 自包含助手的预构建包；安装时无需克隆仓库，也无需授权执行 Git `prepare` 脚本。
+支持官方 DSH `0.1.0-rc.8` 与最新 `0.1.1-rc.1`。Release 提供同时包含 macOS 通用原生助手和 Windows x64 自包含助手的预构建包；安装时无需克隆仓库，也无需授权执行 Git `prepare` 脚本。
 
 ```sh
 dsh plugin --profile web add https://github.com/skymecode/dsh-bgm/releases/latest/download/dsh-bgm.tgz
@@ -189,7 +189,7 @@ pnpm run build
 dsh plugin --profile web add link:.
 ```
 
-本地源码安装会按当前系统构建原生助手。GitHub Actions 的 CI 覆盖 TypeScript 类型检查、Host/Client 构建、macOS universal 与 Windows x64 原生构建、npm tarball 内容检查，以及纯净官方 DSH Web profile 的真实挂载。推送 `v*` Tag 后，Release 工作流会组合两个平台的预构建助手，生成稳定资产 `dsh-bgm.tgz` 和校验文件，再创建 GitHub Release。
+本地源码安装会按当前系统构建原生助手。GitHub Actions 的 CI 覆盖 TypeScript 类型检查、Host/Client 构建、macOS universal 与 Windows x64 原生构建、npm tarball 内容检查，以及 DSH `0.1.0-rc.8`/`0.1.1-rc.1` 两代纯净 Web profile 的真实挂载。推送 `v*` Tag 后，Release 工作流会组合两个平台的预构建助手，生成稳定资产 `dsh-bgm.tgz` 和校验文件，再创建 GitHub Release。
 
 ## 许可证
 

@@ -61,19 +61,33 @@ jobs:
           grep -F 'package/lib/client.js' "$RUNNER_TEMP/package-files.txt"
           grep -F 'package/cordis.patch.yml' "$RUNNER_TEMP/package-files.txt"
 
-      - name: Install pinned official DSH CLI
+      - name: Install legacy official DSH CLI
         run: npm install --global @deepseek-ai/dsh@0.1.0-rc.8
 
-      - name: Mount through the official plugin command
+      - name: Mount through the legacy official plugin command
         env:
-          DSH_HOME: ${{ runner.temp }}/dsh-home
+          DSH_HOME: ${{ runner.temp }}/dsh-home-0.1.0-rc.8
           DSH_TELEMETRY_DISABLED: '1'
         run: |
           package_path="$(find "$PWD/dist" -name 'dsh-bgm-*.tgz' -print -quit)"
           dsh plugin --profile web add "$package_path"
-          dsh web --dump-config > "$RUNNER_TEMP/dsh-web-config.yml"
-          grep -F '# == dsh-bgm' "$RUNNER_TEMP/dsh-web-config.yml"
-          grep -F 'name: dsh-bgm' "$RUNNER_TEMP/dsh-web-config.yml"
+          dsh web --dump-config > "$RUNNER_TEMP/dsh-web-config-0.1.0-rc.8.yml"
+          grep -F '# == dsh-bgm' "$RUNNER_TEMP/dsh-web-config-0.1.0-rc.8.yml"
+          grep -F 'name: dsh-bgm' "$RUNNER_TEMP/dsh-web-config-0.1.0-rc.8.yml"
+
+      - name: Install latest official DSH CLI
+        run: npm install --global @deepseek-ai/dsh@0.1.1-rc.1
+
+      - name: Mount through the latest official plugin command
+        env:
+          DSH_HOME: ${{ runner.temp }}/dsh-home-0.1.1-rc.1
+          DSH_TELEMETRY_DISABLED: '1'
+        run: |
+          package_path="$(find "$PWD/dist" -name 'dsh-bgm-*.tgz' -print -quit)"
+          dsh plugin --profile web add "$package_path"
+          dsh web --dump-config > "$RUNNER_TEMP/dsh-web-config-0.1.1-rc.1.yml"
+          grep -F '# == dsh-bgm' "$RUNNER_TEMP/dsh-web-config-0.1.1-rc.1.yml"
+          grep -F 'name: dsh-bgm' "$RUNNER_TEMP/dsh-web-config-0.1.1-rc.1.yml"
 
       - name: Reject personal paths in published text
         run: |

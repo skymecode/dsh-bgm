@@ -170,18 +170,31 @@ jobs:
           grep -F 'package/native/bin/dsh-bgm-helper-windows.exe' "$RUNNER_TEMP/package-files.txt"
           (cd dist && sha256sum dsh-bgm.tgz > SHA256SUMS.txt)
 
-      - name: Install pinned official DSH CLI
+      - name: Install legacy official DSH CLI
         run: npm install --global @deepseek-ai/dsh@0.1.0-rc.8
 
-      - name: Verify clean official DSH Web profile install
+      - name: Verify clean legacy DSH Web profile install
         env:
-          DSH_HOME: ${{ runner.temp }}/release-dsh-home
+          DSH_HOME: ${{ runner.temp }}/release-dsh-home-0.1.0-rc.8
           DSH_TELEMETRY_DISABLED: '1'
         run: |
           dsh plugin --profile web add "$PWD/dist/dsh-bgm.tgz"
-          dsh web --dump-config > "$RUNNER_TEMP/dsh-web-config.yml"
-          grep -F '# == dsh-bgm' "$RUNNER_TEMP/dsh-web-config.yml"
-          grep -F 'name: dsh-bgm' "$RUNNER_TEMP/dsh-web-config.yml"
+          dsh web --dump-config > "$RUNNER_TEMP/dsh-web-config-0.1.0-rc.8.yml"
+          grep -F '# == dsh-bgm' "$RUNNER_TEMP/dsh-web-config-0.1.0-rc.8.yml"
+          grep -F 'name: dsh-bgm' "$RUNNER_TEMP/dsh-web-config-0.1.0-rc.8.yml"
+
+      - name: Install latest official DSH CLI
+        run: npm install --global @deepseek-ai/dsh@0.1.1-rc.1
+
+      - name: Verify clean latest DSH Web profile install
+        env:
+          DSH_HOME: ${{ runner.temp }}/release-dsh-home-0.1.1-rc.1
+          DSH_TELEMETRY_DISABLED: '1'
+        run: |
+          dsh plugin --profile web add "$PWD/dist/dsh-bgm.tgz"
+          dsh web --dump-config > "$RUNNER_TEMP/dsh-web-config-0.1.1-rc.1.yml"
+          grep -F '# == dsh-bgm' "$RUNNER_TEMP/dsh-web-config-0.1.1-rc.1.yml"
+          grep -F 'name: dsh-bgm' "$RUNNER_TEMP/dsh-web-config-0.1.1-rc.1.yml"
 
       - name: Create GitHub Release
         env:
